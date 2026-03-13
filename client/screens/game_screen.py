@@ -1,0 +1,568 @@
+from __future__ import annotations
+
+import math
+import os
+import time
+from dataclasses import dataclass, field
+
+import arcade
+
+from components.button import Button
+from utils.constants import (
+    WINDOW_WIDTH, WINDOW_HEIGHT, COLOR_BG, COLOR_TEXT,
+    BOARD_SIZE, SQUARE_SIZE, BOARD_PIXEL, BOARD_OFFSET_X, BOARD_OFFSET_Y,
+    COLOR_LIGHT_SQUARE, COLOR_DARK_SQUARE, COLOR_HIGHLIGHT,
+    COOLDOWNS, SPRITES_DIR,
+)
+from utils.socket_client import socket_client
+
+
+# ── Data classes ────────────────────────────────────────────
+
+@dataclass
+class ClientPiece:
+    piece_type: str
+    color: str  # "white" or "black"
+    row: int
+    col: int
+    alive: bool = True
+    cooldown_remaining: float = 0.0
+    cooldown_total: float = 0.0
+    last_move_time: float = 0.0
+
+    # Animation
+    anim_from_x: float | None = None
+    anim_from_y: float | None = None
+    anim_progress: float = 1.0  # 1.0 = no animation
+
+    @property
+    def sprite_name(self) -> str:
+        return f"{self.color}_{self.piece_type}"
+
+    def is_on_cooldown(self) -> bool:
+        if self.last_move_time == 0.0:
+            return False
+        elapsed = time.time() - self.last_move_time
+        return elapsed < self.cooldown_total
+
+    def remaining_cd(self) -> float:
+        if self.last_move_time == 0.0:
+            return 0.0
+        elapsed = time.time() - self.last_move_time
+        return max(0.0, self.cooldown_total - elapsed)
+
+    def cd_fraction(self) -> float:
+        """Return 0.0 (ready) to 1.0 (just moved) fraction of cooldown remaining."""
+        if self.cooldown_total <= 0:
+            return 0.0
+        rem = self.remaining_cd()
+        return rem / self.cooldown_total
+
+
+@dataclass
+class CaptureEffect:
+    x: float
+    y: float
+    timer: float = 0.0
+    duration: float = 0.4
+
+
+class GameScreen:
+    """The main chess game screen with real-time gameplay."""
+
+    ANIM_SPEED = 8.0  # animation interpolation speed
+
+    def __init__(self, window: arcade.Window):
+        self.window = window
+        self.my_color: str = "white"
+        self.opponent_name: str = ""
+        self.pieces: list[ClientPiece] = []
+        self.selected_piece: ClientPiece | None = None
+        self.valid_highlights: list[tuple[int, int]] = []
+        self.capture_effects: list[CaptureEffect] = []
+        self.game_over = False
+        self.game_result: str = ""
+
+        self.sprite_cache: dict[str, arcade.Texture] = {}
+
+        self.back_btn = Button(
+            80, WINDOW_HEIGHT - 25, 100, 30,
+            "← Quitter", on_click=self._leave_game,
+            color=(80, 40, 40), font_size=12,
+        )
+
+        self._register_socket_events()
+
+    def _register_socket_events(self):
+        socket_client.on("game:move_ack", self._on_move_ack)
+        socket_client.on("game:opponent_move", self._on_opponent_move)
+        socket_client.on("game:over", self._on_game_over)
+
+    def on_show(self):
+        """Initialize from game_init_data set by room_screen."""
+        data = getattr(self.window, "game_init_data", None)
+        if not data:
+            return
+        self.my_color = data.get("your_color", "white")
+        self.opponent_name = data.get("black") if self.my_color == "white" else data.get("white")
+        state = data.get("state", [])
+        self._load_state(state)
+        self._load_sprites()
+
+    def _load_state(self, state: list[dict]):
+        self.pieces.clear()
+        for p in state:
+            self.pieces.append(ClientPiece(
+                piece_type=p["type"],
+                color=p["color"],
+                row=p["row"],
+                col=p["col"],
+                alive=p.get("alive", True),
+                cooldown_remaining=p.get("cooldown_remaining", 0.0),
+                cooldown_total=COOLDOWNS.get(p["type"], 1.0),
+            ))
+
+    def _load_sprites(self):
+        """Load piece sprite textures from disk."""
+        for name in [
+            "white_king", "white_queen", "white_bishop", "white_knight", "white_rook", "white_pawn",
+            "black_king", "black_queen", "black_bishop", "black_knight", "black_rook", "black_pawn",
+        ]:
+            path = os.path.join(SPRITES_DIR, f"{name}.png")
+            if os.path.exists(path):
+                self.sprite_cache[name] = arcade.load_texture(path)
+
+    def _board_to_screen(self, row: int, col: int) -> tuple[float, float]:
+        """Convert board (row, col) to screen pixel coordinates.
+
+        If playing as black, the board is flipped so our pieces are at the bottom.
+        """
+        if self.my_color == "black":
+            display_row = 7 - row
+            display_col = 7 - col
+        else:
+            display_row = row
+            display_col = col
+
+        x = BOARD_OFFSET_X + display_col * SQUARE_SIZE + SQUARE_SIZE / 2
+        y = BOARD_OFFSET_Y + display_row * SQUARE_SIZE + SQUARE_SIZE / 2
+        return x, y
+
+    def _screen_to_board(self, sx: float, sy: float) -> tuple[int, int] | None:
+        """Convert screen pixel to board (row, col), or None if off-board."""
+        col = int((sx - BOARD_OFFSET_X) / SQUARE_SIZE)
+        row = int((sy - BOARD_OFFSET_Y) / SQUARE_SIZE)
+
+        if self.my_color == "black":
+            row = 7 - row
+            col = 7 - col
+
+        if 0 <= row < 8 and 0 <= col < 8:
+            return row, col
+        return None
+
+    def _piece_at(self, row: int, col: int) -> ClientPiece | None:
+        for p in self.pieces:
+            if p.alive and p.row == row and p.col == col:
+                return p
+        return None
+
+    # ── Socket handlers ─────────────────────────────────────
+
+    def _on_move_ack(self, data):
+        if not data.get("ok"):
+            return
+        # Our move was accepted — animation already started on click
+        # Update cooldown
+        from_r, from_c = data["from_row"], data["from_col"]
+        to_r, to_c = data["to_row"], data["to_col"]
+
+        piece = self._piece_at(to_r, to_c)
+        if piece:
+            piece.cooldown_total = data.get("cooldown", COOLDOWNS.get(piece.piece_type, 1.0))
+            piece.last_move_time = time.time()
+
+        # Handle capture
+        if data.get("captured"):
+            self._apply_capture(data["captured"])
+
+    def _on_opponent_move(self, data):
+        from_r, from_c = data["from_row"], data["from_col"]
+        to_r, to_c = data["to_row"], data["to_col"]
+
+        piece = self._piece_at(from_r, from_c)
+        if piece:
+            # Start animation
+            old_x, old_y = self._board_to_screen(piece.row, piece.col)
+            piece.anim_from_x = old_x
+            piece.anim_from_y = old_y
+            piece.anim_progress = 0.0
+
+            piece.row = to_r
+            piece.col = to_c
+            piece.cooldown_total = data.get("cooldown", COOLDOWNS.get(piece.piece_type, 1.0))
+            piece.last_move_time = time.time()
+
+        if data.get("captured"):
+            self._apply_capture(data["captured"])
+
+    def _apply_capture(self, cap_data: dict):
+        """Remove captured piece and add visual effect."""
+        for p in self.pieces:
+            if (p.alive and p.row == cap_data["row"] and p.col == cap_data["col"]
+                    and p.color == cap_data["color"] and p.piece_type == cap_data["type"]):
+                p.alive = False
+                sx, sy = self._board_to_screen(p.row, p.col)
+                self.capture_effects.append(CaptureEffect(x=sx, y=sy))
+                break
+
+    def _on_game_over(self, data):
+        self.game_over = True
+        winner = data.get("winner", "")
+        reason = data.get("reason", "")
+        if winner == self.my_color:
+            self.game_result = "Victoire !"
+        else:
+            self.game_result = "Défaite..."
+        if reason == "opponent_disconnected":
+            self.game_result += " (adversaire déconnecté)"
+
+    def _leave_game(self):
+        socket_client.emit("room:leave")
+        self.window.show_screen("home")
+
+    # ── Drawing ─────────────────────────────────────────────
+
+    def on_draw(self):
+        arcade.draw_rectangle_filled(
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2,
+            WINDOW_WIDTH, WINDOW_HEIGHT, COLOR_BG,
+        )
+        self._draw_board()
+        self._draw_highlights()
+        self._draw_pieces()
+        self._draw_capture_effects()
+        self._draw_ui()
+
+        if self.game_over:
+            self._draw_game_over()
+
+    def _draw_board(self):
+        for row in range(BOARD_SIZE):
+            for col in range(BOARD_SIZE):
+                x, y = self._board_to_screen(row, col)
+                is_light = (row + col) % 2 == 0
+                color = COLOR_DARK_SQUARE if is_light else COLOR_LIGHT_SQUARE
+                arcade.draw_rectangle_filled(x, y, SQUARE_SIZE, SQUARE_SIZE, color)
+
+        # Board border
+        bx = BOARD_OFFSET_X + BOARD_PIXEL / 2
+        by = BOARD_OFFSET_Y + BOARD_PIXEL / 2
+        arcade.draw_rectangle_outline(bx, by, BOARD_PIXEL, BOARD_PIXEL, (100, 80, 60), 3)
+
+    def _draw_highlights(self):
+        """Draw valid move highlights for the selected piece."""
+        for row, col in self.valid_highlights:
+            x, y = self._board_to_screen(row, col)
+            arcade.draw_rectangle_filled(x, y, SQUARE_SIZE, SQUARE_SIZE, COLOR_HIGHLIGHT)
+
+        # Selected square
+        if self.selected_piece:
+            x, y = self._board_to_screen(self.selected_piece.row, self.selected_piece.col)
+            arcade.draw_rectangle_filled(x, y, SQUARE_SIZE, SQUARE_SIZE, (100, 200, 100, 80))
+
+    def _draw_pieces(self):
+        now = time.time()
+        for piece in self.pieces:
+            if not piece.alive:
+                continue
+
+            target_x, target_y = self._board_to_screen(piece.row, piece.col)
+
+            # Interpolate animation
+            if piece.anim_progress < 1.0:
+                ax = piece.anim_from_x or target_x
+                ay = piece.anim_from_y or target_y
+                t = piece.anim_progress
+                draw_x = ax + (target_x - ax) * t
+                draw_y = ay + (target_y - ay) * t
+            else:
+                draw_x = target_x
+                draw_y = target_y
+
+            # Alpha: dimmed if on cooldown (own pieces only)
+            is_mine = piece.color == self.my_color
+            on_cd = piece.is_on_cooldown()
+            alpha = 140 if (is_mine and on_cd) else 255
+
+            # Draw sprite or fallback
+            tex = self.sprite_cache.get(piece.sprite_name)
+            if tex:
+                arcade.draw_texture_rectangle(
+                    draw_x, draw_y, SQUARE_SIZE * 0.85, SQUARE_SIZE * 0.85,
+                    tex, alpha=alpha,
+                )
+            else:
+                self._draw_piece_fallback(piece, draw_x, draw_y, alpha)
+
+            # Cooldown ring
+            if on_cd:
+                self._draw_cooldown_indicator(piece, draw_x, draw_y, is_mine)
+
+    def _draw_piece_fallback(self, piece: ClientPiece, x: float, y: float, alpha: int):
+        """Draw a text-based piece when sprites aren't available."""
+        symbols = {
+            ("white", "king"): "♔", ("white", "queen"): "♕",
+            ("white", "rook"): "♖", ("white", "bishop"): "♗",
+            ("white", "knight"): "♘", ("white", "pawn"): "♙",
+            ("black", "king"): "♚", ("black", "queen"): "♛",
+            ("black", "rook"): "♜", ("black", "bishop"): "♝",
+            ("black", "knight"): "♞", ("black", "pawn"): "♟",
+        }
+        sym = symbols.get((piece.color, piece.piece_type), "?")
+
+        # Draw a colored circle background
+        if piece.color == "white":
+            bg = (240, 240, 240, alpha)
+            fg = (30, 30, 30, alpha)
+        else:
+            bg = (50, 50, 50, alpha)
+            fg = (230, 230, 230, alpha)
+
+        arcade.draw_circle_filled(x, y, SQUARE_SIZE * 0.35, bg)
+        arcade.draw_circle_outline(x, y, SQUARE_SIZE * 0.35, (0, 0, 0, 100), 2)
+        arcade.draw_text(
+            sym, x, y, fg, font_size=28,
+            anchor_x="center", anchor_y="center",
+        )
+
+    def _draw_cooldown_indicator(self, piece: ClientPiece, x: float, y: float, is_mine: bool):
+        """Draw cooldown visualization."""
+        frac = piece.cd_fraction()
+        if frac <= 0:
+            return
+
+        if is_mine:
+            # Ring around the piece
+            radius = SQUARE_SIZE * 0.4
+            segments = 32
+            angle_end = 360 * frac
+            points = [(x, y)]
+            for i in range(segments + 1):
+                a = 90 - (angle_end * i / segments)
+                rad = math.radians(a)
+                px = x + radius * math.cos(rad)
+                py = y + radius * math.sin(rad)
+                points.append((px, py))
+
+            if len(points) >= 3:
+                arcade.draw_polygon_filled(points, (200, 60, 60, 80))
+            arcade.draw_arc_outline(
+                x, y, radius * 2, radius * 2,
+                (200, 60, 60, 180), 90, 90 - angle_end, 3,
+            )
+        else:
+            # Small red bubble above enemy piece
+            remaining = piece.remaining_cd()
+            if remaining > 0:
+                bx = x + SQUARE_SIZE * 0.3
+                by = y + SQUARE_SIZE * 0.35
+                arcade.draw_circle_filled(bx, by, 12, (200, 50, 50, 200))
+                arcade.draw_text(
+                    f"{remaining:.1f}",
+                    bx, by, (255, 255, 255), font_size=8,
+                    anchor_x="center", anchor_y="center", bold=True,
+                )
+
+    def _draw_capture_effects(self):
+        for eff in self.capture_effects:
+            t = eff.timer / eff.duration
+            alpha = int(255 * (1.0 - t))
+            radius = 20 + 30 * t
+            arcade.draw_circle_filled(eff.x, eff.y, radius, (255, 100, 50, alpha))
+            arcade.draw_circle_outline(eff.x, eff.y, radius, (255, 200, 100, alpha), 2)
+
+    def _draw_ui(self):
+        self.back_btn.draw()
+
+        user = getattr(self.window, "user_data", None)
+        my_name = user["username"] if user else "Vous"
+
+        # Top: opponent info
+        arcade.draw_text(
+            f"Adversaire : {self.opponent_name}",
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT - 20,
+            (200, 200, 200), font_size=14,
+            anchor_x="center", anchor_y="center",
+        )
+        # Bottom: your info
+        arcade.draw_text(
+            f"{my_name} ({self.my_color})",
+            WINDOW_WIDTH / 2, 20,
+            (200, 200, 200), font_size=14,
+            anchor_x="center", anchor_y="center",
+        )
+
+    def _draw_game_over(self):
+        # Semi-transparent overlay
+        arcade.draw_rectangle_filled(
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2,
+            WINDOW_WIDTH, WINDOW_HEIGHT,
+            (0, 0, 0, 160),
+        )
+        color = (100, 255, 100) if "Victoire" in self.game_result else (255, 100, 100)
+        arcade.draw_text(
+            self.game_result,
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 + 30,
+            color, font_size=36,
+            anchor_x="center", anchor_y="center", bold=True,
+        )
+        arcade.draw_text(
+            "Cliquez pour revenir au menu",
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 - 30,
+            (180, 180, 180), font_size=14,
+            anchor_x="center", anchor_y="center",
+        )
+
+    # ── Update ──────────────────────────────────────────────
+
+    def on_update(self, dt: float):
+        # Update piece animations
+        for piece in self.pieces:
+            if piece.anim_progress < 1.0:
+                piece.anim_progress = min(1.0, piece.anim_progress + dt * self.ANIM_SPEED)
+
+        # Update capture effects
+        for eff in self.capture_effects:
+            eff.timer += dt
+        self.capture_effects = [e for e in self.capture_effects if e.timer < e.duration]
+
+    # ── Input ───────────────────────────────────────────────
+
+    def on_mouse_motion(self, x, y, dx, dy):
+        self.back_btn.check_hover(x, y)
+
+    def on_mouse_press(self, x, y, button, modifiers):
+        if self.game_over:
+            self._leave_game()
+            return
+
+        if self.back_btn.check_click(x, y):
+            return
+
+        board_pos = self._screen_to_board(x, y)
+        if board_pos is None:
+            self.selected_piece = None
+            self.valid_highlights.clear()
+            return
+
+        row, col = board_pos
+        clicked_piece = self._piece_at(row, col)
+
+        if self.selected_piece:
+            # Try to move
+            if clicked_piece and clicked_piece.color == self.my_color:
+                # Re-select another own piece
+                self._select_piece(clicked_piece)
+            else:
+                self._try_move(self.selected_piece, row, col)
+        else:
+            # Select a piece
+            if clicked_piece and clicked_piece.color == self.my_color:
+                self._select_piece(clicked_piece)
+
+    def _select_piece(self, piece: ClientPiece):
+        if piece.is_on_cooldown():
+            return
+        self.selected_piece = piece
+        # Client-side move highlighting (basic — server validates)
+        self.valid_highlights = self._get_basic_moves(piece)
+
+    def _get_basic_moves(self, piece: ClientPiece) -> list[tuple[int, int]]:
+        """Compute basic valid squares for highlighting (simplified client-side)."""
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if r == piece.row and c == piece.col:
+                    continue
+                target = self._piece_at(r, c)
+                if target and target.color == piece.color:
+                    continue
+                if self._basic_valid(piece, r, c, target):
+                    moves.append((r, c))
+        return moves
+
+    def _basic_valid(self, piece: ClientPiece, to_r: int, to_c: int, target: ClientPiece | None) -> bool:
+        dr = to_r - piece.row
+        dc = to_c - piece.col
+
+        match piece.piece_type:
+            case "pawn":
+                direction = 1 if piece.color == "white" else -1
+                start_row = 1 if piece.color == "white" else 6
+                if dc == 0 and dr == direction and target is None:
+                    return True
+                if dc == 0 and dr == 2 * direction and piece.row == start_row and target is None:
+                    return self._piece_at(piece.row + direction, piece.col) is None
+                if abs(dc) == 1 and dr == direction and target is not None:
+                    return True
+            case "knight":
+                return (abs(dr), abs(dc)) in ((2, 1), (1, 2))
+            case "bishop":
+                if abs(dr) == abs(dc) and dr != 0:
+                    return self._path_clear(piece, dr, dc)
+            case "rook":
+                if (dr == 0) != (dc == 0):
+                    return self._path_clear(piece, dr, dc)
+            case "queen":
+                if abs(dr) == abs(dc) and dr != 0:
+                    return self._path_clear(piece, dr, dc)
+                if (dr == 0) != (dc == 0):
+                    return self._path_clear(piece, dr, dc)
+            case "king":
+                return abs(dr) <= 1 and abs(dc) <= 1
+        return False
+
+    def _path_clear(self, piece: ClientPiece, dr: int, dc: int) -> bool:
+        step_r = (1 if dr > 0 else -1) if dr != 0 else 0
+        step_c = (1 if dc > 0 else -1) if dc != 0 else 0
+        steps = max(abs(dr), abs(dc))
+        for i in range(1, steps):
+            r = piece.row + step_r * i
+            c = piece.col + step_c * i
+            if self._piece_at(r, c) is not None:
+                return False
+        return True
+
+    def _try_move(self, piece: ClientPiece, to_row: int, to_col: int):
+        """Send move to server and optimistically animate."""
+        if piece.is_on_cooldown():
+            return
+
+        # Optimistic animation
+        old_x, old_y = self._board_to_screen(piece.row, piece.col)
+        piece.anim_from_x = old_x
+        piece.anim_from_y = old_y
+        piece.anim_progress = 0.0
+
+        from_row, from_col = piece.row, piece.col
+        piece.row = to_row
+        piece.col = to_col
+
+        self.selected_piece = None
+        self.valid_highlights.clear()
+
+        socket_client.emit("game:move", {
+            "from_row": from_row,
+            "from_col": from_col,
+            "to_row": to_row,
+            "to_col": to_col,
+        })
+
+    def on_key_press(self, key, modifiers):
+        if key == arcade.key.ESCAPE:
+            self.selected_piece = None
+            self.valid_highlights.clear()
+
+    def on_text(self, text: str):
+        pass

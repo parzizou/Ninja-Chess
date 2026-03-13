@@ -1,0 +1,5 @@
+arcade==2.6.17
+python-socketio[client]==5.12.1
+requests==2.32.3
+aiohttp==3.11.11
+pyinstaller==6.12.0
