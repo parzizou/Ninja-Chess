@@ -298,10 +298,13 @@ class GameScreen:
             # Draw sprite or fallback
             tex = self.sprite_cache.get(piece.sprite_name)
             if tex:
-                arcade.draw_texture_rectangle(
-                    draw_x, draw_y, SQUARE_SIZE * 0.85, SQUARE_SIZE * 0.85,
-                    tex, alpha=alpha,
-                )
+                sprite = arcade.Sprite(tex)
+                sprite.center_x = draw_x
+                sprite.center_y = draw_y
+                sprite.width = SQUARE_SIZE * 0.85
+                sprite.height = SQUARE_SIZE * 0.85
+                sprite.alpha = alpha
+                sprite.draw()
             else:
                 self._draw_piece_fallback(piece, draw_x, draw_y, alpha)
 
@@ -343,10 +346,12 @@ class GameScreen:
             return
 
         if is_mine:
-            # Ring around the piece
+            # Cooldown pie overlay
             radius = SQUARE_SIZE * 0.4
             segments = 32
             angle_end = 360 * frac
+
+            # Filled pie slice
             points = [(x, y)]
             for i in range(segments + 1):
                 a = 90 - (angle_end * i / segments)
@@ -357,10 +362,19 @@ class GameScreen:
 
             if len(points) >= 3:
                 arcade.draw_polygon_filled(points, (200, 60, 60, 80))
-            arcade.draw_arc_outline(
-                x, y, radius * 2, radius * 2,
-                (200, 60, 60, 180), 90, 90 - angle_end, 3,
-            )
+
+            # Arc outline (manual line segments)
+            arc_points = []
+            for i in range(segments + 1):
+                a = 90 - (angle_end * i / segments)
+                rad = math.radians(a)
+                arc_points.append((x + radius * math.cos(rad), y + radius * math.sin(rad)))
+            for i in range(len(arc_points) - 1):
+                arcade.draw_line(
+                    arc_points[i][0], arc_points[i][1],
+                    arc_points[i + 1][0], arc_points[i + 1][1],
+                    (200, 60, 60, 180), 3,
+                )
         else:
             # Small red bubble above enemy piece
             remaining = piece.remaining_cd()

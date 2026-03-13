@@ -2,6 +2,27 @@ from __future__ import annotations
 
 import arcade
 
+# ── Arcade 3.0 compatibility shims ─────────────────────
+# Arcade 3.0 removed several draw_* functions. Restore them
+# so that all screens keep using the 2.x-style API unchanged.
+
+if not hasattr(arcade, "draw_rectangle_filled"):
+    def _draw_rectangle_filled(cx, cy, w, h, color, tilt_angle=0):
+        arcade.draw_rect_filled(arcade.XYWH(cx, cy, w, h), color, tilt_angle)
+    arcade.draw_rectangle_filled = _draw_rectangle_filled
+
+if not hasattr(arcade, "draw_rectangle_outline"):
+    def _draw_rectangle_outline(cx, cy, w, h, color, border_width=1, tilt_angle=0):
+        arcade.draw_rect_outline(arcade.XYWH(cx, cy, w, h), color, border_width, tilt_angle)
+    arcade.draw_rectangle_outline = _draw_rectangle_outline
+
+if not hasattr(arcade, "set_background_color"):
+    def _set_background_color(color):
+        pass  # Handled via window.background_color in __init__
+    arcade.set_background_color = _set_background_color
+
+# ────────────────────────────────────────────────────────
+
 from utils.constants import WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE
 from utils.credentials import load_credentials
 from utils.api import api
@@ -20,7 +41,7 @@ class NinjaChessWindow(arcade.Window):
 
     def __init__(self):
         super().__init__(WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE, resizable=False)
-        arcade.set_background_color((30, 30, 30))
+        self.background_color = (30, 30, 30)
 
         self.user_data: dict | None = None
         self.game_init_data: dict | None = None

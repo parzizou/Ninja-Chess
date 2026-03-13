@@ -1,4 +1,4 @@
-arcade==2.6.17
+arcade==3.0.0
 python-socketio[client]==5.12.1
 requests==2.32.3
 aiohttp==3.11.11
