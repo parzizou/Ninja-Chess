@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import arcade
 
@@ -67,6 +67,15 @@ class CaptureEffect:
     duration: float = 0.4
 
 
+@dataclass
+class PendingMove:
+    piece: ClientPiece
+    from_row: int
+    from_col: int
+    to_row: int
+    to_col: int
+
+
 class GameScreen:
     """The main chess game screen with real-time gameplay."""
 
@@ -79,6 +88,11 @@ class GameScreen:
         self.pieces: list[ClientPiece] = []
         self.selected_piece: ClientPiece | None = None
         self.valid_highlights: list[tuple[int, int]] = []
+        self.dragging_piece: ClientPiece | None = None
+        self.drag_x: float = 0.0
+        self.drag_y: float = 0.0
+        self.drag_hover_square: tuple[int, int] | None = None
+        self.pending_move: PendingMove | None = None
         self.capture_effects: list[CaptureEffect] = []
         self.game_over = False
         self.game_result: str = ""
@@ -104,6 +118,9 @@ class GameScreen:
         data = getattr(self.window, "game_init_data", None)
         if not data:
             return
+        self._clear_selection()
+        self._stop_drag()
+        self.pending_move = None
         self.my_color = data.get("your_color", "white")
         self.opponent_name = data.get("black") if self.my_color == "white" else data.get("white")
         state = data.get("state", [])
@@ -172,6 +189,15 @@ class GameScreen:
 
     def _on_move_ack(self, data):
         if not data.get("ok"):
+            if self.pending_move:
+                piece = self.pending_move.piece
+                if piece.alive:
+                    piece.row = self.pending_move.from_row
+                    piece.col = self.pending_move.from_col
+                    piece.anim_from_x = None
+                    piece.anim_from_y = None
+                    piece.anim_progress = 1.0
+                self.pending_move = None
             return
         # Our move was accepted — animation already started on click
         # Update cooldown
@@ -182,6 +208,8 @@ class GameScreen:
         if piece:
             piece.cooldown_total = data.get("cooldown", COOLDOWNS.get(piece.piece_type, 1.0))
             piece.last_move_time = time.time()
+
+        self.pending_move = None
 
         # Handle capture
         if data.get("captured"):
@@ -263,9 +291,27 @@ class GameScreen:
 
     def _draw_highlights(self):
         """Draw valid move highlights for the selected piece."""
+        pulse = 0.5 + 0.5 * math.sin(time.time() * 7.0)
         for row, col in self.valid_highlights:
             x, y = self._board_to_screen(row, col)
             arcade.draw_rectangle_filled(x, y, SQUARE_SIZE, SQUARE_SIZE, COLOR_HIGHLIGHT)
+
+            # Add a small glowing point at center to make legal targets pop.
+            outer_r = SQUARE_SIZE * (0.16 + 0.03 * pulse)
+            inner_r = SQUARE_SIZE * (0.06 + 0.012 * pulse)
+            arcade.draw_circle_filled(x, y, outer_r, (255, 245, 180, 45))
+            arcade.draw_circle_filled(x, y, inner_r, (255, 250, 200, 180))
+
+        if self.drag_hover_square and self.drag_hover_square in self.valid_highlights:
+            row, col = self.drag_hover_square
+            x, y = self._board_to_screen(row, col)
+            arcade.draw_rectangle_outline(
+                x, y,
+                SQUARE_SIZE * 0.88,
+                SQUARE_SIZE * 0.88,
+                (255, 245, 190, 220),
+                3,
+            )
 
         # Selected square
         if self.selected_piece:
@@ -273,9 +319,12 @@ class GameScreen:
             arcade.draw_rectangle_filled(x, y, SQUARE_SIZE, SQUARE_SIZE, (100, 200, 100, 80))
 
     def _draw_pieces(self):
-        now = time.time()
+        dragged_piece = self.dragging_piece if self.dragging_piece and self.dragging_piece.alive else None
+
         for piece in self.pieces:
             if not piece.alive:
+                continue
+            if dragged_piece is piece:
                 continue
 
             target_x, target_y = self._board_to_screen(piece.row, piece.col)
@@ -296,26 +345,43 @@ class GameScreen:
             on_cd = piece.is_on_cooldown()
             alpha = 140 if (is_mine and on_cd) else 255
 
-            # Draw sprite or fallback
-            tex = self.sprite_cache.get(piece.sprite_name)
-            if tex:
-                self._sprite_list.clear(deep=False)
-                sp = arcade.Sprite(tex)
-                sp.center_x = draw_x
-                sp.center_y = draw_y
-                sp.width = SQUARE_SIZE * 0.85
-                sp.height = SQUARE_SIZE * 0.85
-                sp.alpha = alpha
-                self._sprite_list.append(sp)
-                self._sprite_list.draw()
-            else:
-                self._draw_piece_fallback(piece, draw_x, draw_y, alpha)
+            self._draw_piece_visual(piece, draw_x, draw_y, alpha)
 
             # Cooldown ring
             if on_cd:
                 self._draw_cooldown_indicator(piece, draw_x, draw_y, is_mine)
 
-    def _draw_piece_fallback(self, piece: ClientPiece, x: float, y: float, alpha: int):
+        if dragged_piece:
+            self._draw_piece_visual(dragged_piece, self.drag_x, self.drag_y, 245, size_mult=1.08)
+
+    def _draw_piece_visual(
+            self,
+            piece: ClientPiece,
+            x: float,
+            y: float,
+            alpha: int,
+            size_mult: float = 1.0):
+        tex = self.sprite_cache.get(piece.sprite_name)
+        if tex:
+            self._sprite_list.clear(deep=False)
+            sp = arcade.Sprite(tex)
+            sp.center_x = x
+            sp.center_y = y
+            sp.width = SQUARE_SIZE * 0.85 * size_mult
+            sp.height = SQUARE_SIZE * 0.85 * size_mult
+            sp.alpha = alpha
+            self._sprite_list.append(sp)
+            self._sprite_list.draw()
+        else:
+            self._draw_piece_fallback(piece, x, y, alpha, size_mult=size_mult)
+
+    def _draw_piece_fallback(
+            self,
+            piece: ClientPiece,
+            x: float,
+            y: float,
+            alpha: int,
+            size_mult: float = 1.0):
         """Draw a text-based piece when sprites aren't available."""
         symbols = {
             ("white", "king"): "♔", ("white", "queen"): "♕",
@@ -335,10 +401,11 @@ class GameScreen:
             bg = (50, 50, 50, alpha)
             fg = (230, 230, 230, alpha)
 
-        arcade.draw_circle_filled(x, y, SQUARE_SIZE * 0.35, bg)
-        arcade.draw_circle_outline(x, y, SQUARE_SIZE * 0.35, (0, 0, 0, 100), 2)
+        radius = SQUARE_SIZE * 0.35 * size_mult
+        arcade.draw_circle_filled(x, y, radius, bg)
+        arcade.draw_circle_outline(x, y, radius, (0, 0, 0, 100), 2)
         arcade.draw_text(
-            sym, x, y, fg, font_size=28,
+            sym, x, y, fg, font_size=int(28 * size_mult),
             anchor_x="center", anchor_y="center",
         )
 
@@ -458,6 +525,10 @@ class GameScreen:
 
     def on_mouse_motion(self, x, y, dx, dy):
         self.back_btn.check_hover(x, y)
+        if self.dragging_piece:
+            self.drag_x = x
+            self.drag_y = y
+            self.drag_hover_square = self._screen_to_board(x, y)
 
     def on_mouse_press(self, x, y, button, modifiers):
         if self.game_over:
@@ -467,33 +538,76 @@ class GameScreen:
         if self.back_btn.check_click(x, y):
             return
 
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+
         board_pos = self._screen_to_board(x, y)
         if board_pos is None:
-            self.selected_piece = None
-            self.valid_highlights.clear()
+            self._stop_drag()
+            self._clear_selection()
             return
 
         row, col = board_pos
         clicked_piece = self._piece_at(row, col)
 
-        if self.selected_piece:
-            # Try to move
-            if clicked_piece and clicked_piece.color == self.my_color:
-                # Re-select another own piece
-                self._select_piece(clicked_piece)
-            else:
-                self._try_move(self.selected_piece, row, col)
-        else:
-            # Select a piece
-            if clicked_piece and clicked_piece.color == self.my_color:
-                self._select_piece(clicked_piece)
-
-    def _select_piece(self, piece: ClientPiece):
-        if piece.is_on_cooldown():
+        # Select + drag own piece.
+        if clicked_piece and clicked_piece.color == self.my_color:
+            if self._select_piece(clicked_piece):
+                self._start_drag(clicked_piece, x, y)
             return
+
+        # Fallback: still allow click-to-move on highlighted squares.
+        if self.selected_piece and (row, col) in self.valid_highlights:
+            self._try_move(self.selected_piece, row, col)
+            return
+
+        self._clear_selection()
+
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        self.back_btn.check_hover(x, y)
+        if self.dragging_piece:
+            self.drag_x = x
+            self.drag_y = y
+            self.drag_hover_square = self._screen_to_board(x, y)
+
+    def on_mouse_release(self, x, y, button, modifiers):
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+        if not self.dragging_piece:
+            return
+
+        piece = self.dragging_piece
+        target = self._screen_to_board(x, y)
+        self._stop_drag()
+
+        if target is None:
+            return
+
+        to_row, to_col = target
+        if self.selected_piece is piece and (to_row, to_col) in self.valid_highlights:
+            self._try_move(piece, to_row, to_col)
+
+    def _start_drag(self, piece: ClientPiece, x: float, y: float):
+        self.dragging_piece = piece
+        self.drag_x = x
+        self.drag_y = y
+        self.drag_hover_square = self._screen_to_board(x, y)
+
+    def _stop_drag(self):
+        self.dragging_piece = None
+        self.drag_hover_square = None
+
+    def _clear_selection(self):
+        self.selected_piece = None
+        self.valid_highlights.clear()
+
+    def _select_piece(self, piece: ClientPiece) -> bool:
+        if piece.is_on_cooldown():
+            return False
         self.selected_piece = piece
         # Client-side move highlighting (basic — server validates)
         self.valid_highlights = self._get_basic_moves(piece)
+        return True
 
     def _get_basic_moves(self, piece: ClientPiece) -> list[tuple[int, int]]:
         """Compute basic valid squares for highlighting (simplified client-side)."""
@@ -553,7 +667,9 @@ class GameScreen:
 
     def _try_move(self, piece: ClientPiece, to_row: int, to_col: int):
         """Send move to server and optimistically animate."""
-        if piece.is_on_cooldown():
+        if piece.is_on_cooldown() or self.pending_move is not None:
+            return
+        if (to_row, to_col) not in self.valid_highlights:
             return
 
         # Optimistic animation
@@ -566,8 +682,16 @@ class GameScreen:
         piece.row = to_row
         piece.col = to_col
 
-        self.selected_piece = None
-        self.valid_highlights.clear()
+        self.pending_move = PendingMove(
+            piece=piece,
+            from_row=from_row,
+            from_col=from_col,
+            to_row=to_row,
+            to_col=to_col,
+        )
+
+        self._stop_drag()
+        self._clear_selection()
 
         socket_client.emit("game:move", {
             "from_row": from_row,
@@ -578,8 +702,8 @@ class GameScreen:
 
     def on_key_press(self, key, modifiers):
         if key == arcade.key.ESCAPE:
-            self.selected_piece = None
-            self.valid_highlights.clear()
+            self._stop_drag()
+            self._clear_selection()
 
     def on_text(self, text: str):
         pass

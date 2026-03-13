@@ -105,6 +105,16 @@ class NinjaChessWindow(arcade.Window):
     def on_mouse_press(self, x, y, button, modifiers):
         self.current_screen.on_mouse_press(x, y, button, modifiers)
 
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        handler = getattr(self.current_screen, "on_mouse_drag", None)
+        if handler:
+            handler(x, y, dx, dy, buttons, modifiers)
+
+    def on_mouse_release(self, x, y, button, modifiers):
+        handler = getattr(self.current_screen, "on_mouse_release", None)
+        if handler:
+            handler(x, y, button, modifiers)
+
     def on_key_press(self, key, modifiers):
         self.current_screen.on_key_press(key, modifiers)
 
