@@ -2,9 +2,33 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from pathlib import Path
 
-CREDENTIALS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "credentials.json")
+
+def _get_credentials_file() -> Path:
+    appdata = os.getenv("APPDATA")
+    if appdata:
+        base_dir = Path(appdata) / "NinjaChess"
+    else:
+        base_dir = Path.home() / ".ninja_chess"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    return base_dir / "credentials.json"
+
+
+CREDENTIALS_FILE = _get_credentials_file()
+LEGACY_CREDENTIALS_FILE = Path(__file__).resolve().parent.parent / "credentials.json"
+
+
+def _migrate_legacy_credentials() -> None:
+    if CREDENTIALS_FILE.exists() or not LEGACY_CREDENTIALS_FILE.exists():
+        return
+    try:
+        CREDENTIALS_FILE.write_text(
+            LEGACY_CREDENTIALS_FILE.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def save_credentials(username: str, token: str):
@@ -16,6 +40,7 @@ def save_credentials(username: str, token: str):
 
 def load_credentials() -> dict[str, str] | None:
     """Load saved credentials, or None if not found / invalid."""
+    _migrate_legacy_credentials()
     if not os.path.exists(CREDENTIALS_FILE):
         return None
     try:
