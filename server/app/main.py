@@ -60,7 +60,7 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # ── Combined ASGI app ───────────────────────────────────
 
-combined_app = socketio.ASGIApp(sio, other_app=app)
+combined_app = socketio.ASGIApp(sio, app)
 
 
 if __name__ == "__main__":
