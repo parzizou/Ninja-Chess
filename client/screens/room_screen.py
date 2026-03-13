@@ -69,11 +69,14 @@ class RoomScreen:
         self._rebuild_room_buttons()
 
     def _on_room_created(self, data):
-        # We're in the room waiting for a second player
-        pass
+        # Navigate to waiting room screen
+        waiting = self.window.screens.get("waiting")
+        if waiting:
+            waiting.set_room(data)
+        self.window.show_screen("waiting")
 
     def _on_room_ready(self, data):
-        # Game is starting!
+        # Guest joined: game starts immediately
         self.window.game_init_data = data
         self.window.show_screen("game")
 

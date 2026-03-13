@@ -103,9 +103,16 @@ def register_events(sio: socketio.AsyncServer):
             return
 
         room_id = data.get("room_id")
+
+        # Prevent joining your own room
+        existing_room = room_manager.rooms.get(room_id)
+        if existing_room and existing_room.creator_sid == sid:
+            await sio.emit("room:error", {"message": "Vous ne pouvez pas rejoindre votre propre room"}, to=sid)
+            return
+
         room = room_manager.join_room(room_id, sid, session["username"], session["user_id"])
         if room is None:
-            await sio.emit("room:error", {"message": "Room not found or full"}, to=sid)
+            await sio.emit("room:error", {"message": "Room introuvable ou déjà pleine"}, to=sid)
             return
 
         await sio.enter_room(sid, room.room_id)

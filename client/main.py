@@ -31,6 +31,7 @@ from utils.socket_client import socket_client
 from screens.login_screen import LoginScreen
 from screens.home_screen import HomeScreen
 from screens.room_screen import RoomScreen
+from screens.waiting_screen import WaitingScreen
 from screens.game_screen import GameScreen
 from screens.leaderboard_screen import LeaderboardScreen
 from screens.profile_screen import ProfileScreen
@@ -51,6 +52,7 @@ class NinjaChessWindow(arcade.Window):
             "login": LoginScreen(self),
             "home": HomeScreen(self),
             "rooms": RoomScreen(self),
+            "waiting": WaitingScreen(self),
             "game": GameScreen(self),
             "leaderboard": LeaderboardScreen(self),
             "profile": ProfileScreen(self),

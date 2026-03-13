@@ -84,6 +84,7 @@ class GameScreen:
         self.game_result: str = ""
 
         self.sprite_cache: dict[str, arcade.Texture] = {}
+        self._sprite_list = arcade.SpriteList()
 
         self.back_btn = Button(
             80, WINDOW_HEIGHT - 25, 100, 30,
@@ -298,13 +299,15 @@ class GameScreen:
             # Draw sprite or fallback
             tex = self.sprite_cache.get(piece.sprite_name)
             if tex:
-                sprite = arcade.Sprite(tex)
-                sprite.center_x = draw_x
-                sprite.center_y = draw_y
-                sprite.width = SQUARE_SIZE * 0.85
-                sprite.height = SQUARE_SIZE * 0.85
-                sprite.alpha = alpha
-                sprite.draw()
+                self._sprite_list.clear(deep=False)
+                sp = arcade.Sprite(tex)
+                sp.center_x = draw_x
+                sp.center_y = draw_y
+                sp.width = SQUARE_SIZE * 0.85
+                sp.height = SQUARE_SIZE * 0.85
+                sp.alpha = alpha
+                self._sprite_list.append(sp)
+                self._sprite_list.draw()
             else:
                 self._draw_piece_fallback(piece, draw_x, draw_y, alpha)
 
