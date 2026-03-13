@@ -4,3 +4,5 @@
 *.log
 *.db
 credentials.json
+
+client/build/*

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 # ── Window ──────────────────────────────────────────────
 WINDOW_WIDTH = 900
@@ -32,7 +33,13 @@ SERVER_URL = "https://ninja-chess.parzizou.fr"
 API_URL = f"{SERVER_URL}"
 
 # ── Assets ──────────────────────────────────────────────
-ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets")
+def _get_base_dir() -> str:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return sys._MEIPASS
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+ASSETS_DIR = os.path.join(_get_base_dir(), "assets")
 SPRITES_DIR = os.path.join(ASSETS_DIR, "sprites")
 
 # ── Cooldowns (client mirror for visual feedback) ──────
