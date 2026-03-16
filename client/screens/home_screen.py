@@ -21,19 +21,21 @@ class HomeScreen:
         cy = WINDOW_HEIGHT / 2
 
         self.buttons = [
-            Button(cx, cy + 80, 280, 50, "Jouer - Standard",
+            Button(cx, cy + 110, 280, 50, "Jouer - Standard",
                    on_click=lambda: self._play_standard(), font_size=16),
-            Button(cx, cy + 20, 280, 50, "Jouer - Rumble (bientôt)",
+            Button(cx, cy + 50, 280, 50, "Jouer vs IA",
+                   on_click=lambda: self.window.show_screen("ai_difficulty"), font_size=16),
+            Button(cx, cy - 10, 280, 50, "Jouer - Rumble (bientôt)",
                    on_click=None, color=(80, 80, 90), font_size=14),
-            Button(cx, cy - 40, 280, 50, "Classement",
+            Button(cx, cy - 70, 280, 50, "Classement",
                    on_click=lambda: self.window.show_screen("leaderboard"), font_size=16),
-            Button(cx, cy - 100, 280, 50, "Mon Profil",
+            Button(cx, cy - 130, 280, 50, "Mon Profil",
                    on_click=lambda: self.window.show_screen("profile"), font_size=16),
-            Button(cx, cy - 200, 180, 40, "Déconnexion",
+            Button(cx, cy - 220, 180, 40, "Déconnexion",
                    on_click=self._logout, color=COLOR_DANGER, font_size=13),
         ]
         # Rumble button disabled
-        self.buttons[1].enabled = False
+        self.buttons[2].enabled = False
 
     def _play_standard(self):
         # Connect to socket if not already connected

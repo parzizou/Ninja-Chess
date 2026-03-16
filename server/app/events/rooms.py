@@ -50,6 +50,7 @@ class GameState:
     black_username: str
     finished: bool = False
     winner_color: Color | None = None
+    rematch_requests: set[str] = field(default_factory=set)
 
 
 class RoomManager:
@@ -96,11 +97,13 @@ class RoomManager:
             # Creator left — destroy room
             if room.guest_sid:
                 self.sid_to_room.pop(room.guest_sid, None)
+            self.games.pop(room_id, None)
             del self.rooms[room_id]
         elif room.guest_sid == sid:
             room.guest_sid = None
             room.guest_username = None
             room.guest_user_id = None
+            self.games.pop(room_id, None)
 
         return room_id
 
@@ -127,6 +130,24 @@ class RoomManager:
         if room_id is None:
             return None
         return self.games.get(room_id)
+
+    def restart_game(self, room_id: str) -> GameState | None:
+        room = self.rooms.get(room_id)
+        game = self.games.get(room_id)
+        if room is None or game is None or not room.is_full:
+            return None
+
+        game.board = Board()
+        game.finished = False
+        game.winner_color = None
+        game.rematch_requests.clear()
+        game.white_sid = room.creator_sid
+        game.black_sid = room.guest_sid
+        game.white_user_id = room.creator_user_id
+        game.black_user_id = room.guest_user_id
+        game.white_username = room.creator_username
+        game.black_username = room.guest_username
+        return game
 
     def remove_game(self, room_id: str):
         self.games.pop(room_id, None)

@@ -44,11 +44,17 @@ class LoginScreen:
             hover_color=(80, 80, 90),
             font_size=12,
         )
+        self.offline_ai_btn = Button(
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 - 240, 250, 38,
+            "Jouer vs IA (sans compte)",
+            on_click=lambda: self.window.show_screen("ai_difficulty"),
+            color=(55, 90, 60), hover_color=(70, 115, 75), font_size=13,
+        )
 
         self.error_message = ""
         self.loading = False
         self.inputs = [self.username_input, self.password_input]
-        self.buttons = [self.login_btn, self.register_btn, self.stay_btn]
+        self.buttons = [self.login_btn, self.register_btn, self.stay_btn, self.offline_ai_btn]
 
     def _toggle_stay(self):
         self.stay_connected = not self.stay_connected
@@ -141,6 +147,13 @@ class LoginScreen:
             inp.draw()
         for btn in self.buttons:
             btn.draw()
+
+        arcade.draw_text(
+            "── ou ──",
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 - 205,
+            (90, 90, 100), font_size=11,
+            anchor_x="center", anchor_y="center",
+        )
 
         if self.error_message:
             arcade.draw_text(

@@ -44,7 +44,7 @@ SPRITES_DIR = os.path.join(ASSETS_DIR, "sprites")
 
 # ── Cooldowns (client mirror for visual feedback) ──────
 COOLDOWNS = {
-    "pawn": 1.0,
+    "pawn": 1.5,
     "knight": 3.0,
     "bishop": 3.0,
     "rook": 4.0,

@@ -80,6 +80,8 @@ class GameScreen:
     """The main chess game screen with real-time gameplay."""
 
     ANIM_SPEED = 8.0  # animation interpolation speed
+    ROUND_START_COUNTDOWN = 3.0
+    ROUND_START_FIGHT_FLASH = 0.55
 
     def __init__(self, window: arcade.Window):
         self.window = window
@@ -96,6 +98,11 @@ class GameScreen:
         self.capture_effects: list[CaptureEffect] = []
         self.game_over = False
         self.game_result: str = ""
+        self.rematch_waiting = False
+        self.en_passant_square: tuple[int, int] | None = None  # (row, col) EP target square
+
+        self.round_start_countdown = self.ROUND_START_COUNTDOWN
+        self.round_start_fight_flash = self.ROUND_START_FIGHT_FLASH
 
         self.sprite_cache: dict[str, arcade.Texture] = {}
         self._sprite_list = arcade.SpriteList()
@@ -105,6 +112,16 @@ class GameScreen:
             "← Quitter", on_click=self._leave_game,
             color=(80, 40, 40), font_size=12,
         )
+        self.replay_btn = Button(
+            WINDOW_WIDTH / 2 - 90, WINDOW_HEIGHT / 2 - 80, 160, 46,
+            "Rejouer", on_click=self._request_rematch,
+            color=(45, 120, 70), hover_color=(55, 145, 82), font_size=16,
+        )
+        self.menu_btn = Button(
+            WINDOW_WIDTH / 2 + 90, WINDOW_HEIGHT / 2 - 80, 160, 46,
+            "Menu", on_click=self._leave_game,
+            color=(70, 70, 82), hover_color=(90, 90, 104), font_size=16,
+        )
 
         self._register_socket_events()
 
@@ -112,6 +129,8 @@ class GameScreen:
         socket_client.on("game:move_ack", self._on_move_ack)
         socket_client.on("game:opponent_move", self._on_opponent_move)
         socket_client.on("game:over", self._on_game_over)
+        socket_client.on("game:rematch_waiting", self._on_rematch_waiting)
+        socket_client.on("game:rematch_unavailable", self._on_rematch_unavailable)
 
     def on_show(self):
         """Initialize from game_init_data set by room_screen."""
@@ -121,11 +140,23 @@ class GameScreen:
         self._clear_selection()
         self._stop_drag()
         self.pending_move = None
+        self.capture_effects.clear()
+        self.game_over = False
+        self.game_result = ""
+        self.rematch_waiting = False
+        self.en_passant_square = None
+        self.replay_btn.enabled = True
+        self.replay_btn.text = "Rejouer"
+        self.round_start_countdown = self.ROUND_START_COUNTDOWN
+        self.round_start_fight_flash = self.ROUND_START_FIGHT_FLASH
         self.my_color = data.get("your_color", "white")
         self.opponent_name = data.get("black") if self.my_color == "white" else data.get("white")
         state = data.get("state", [])
         self._load_state(state)
         self._load_sprites()
+
+    def _is_round_start_locked(self) -> bool:
+        return self.round_start_countdown > 0.0 or self.round_start_fight_flash > 0.0
 
     def _load_state(self, state: list[dict]):
         self.pieces.clear()
@@ -199,21 +230,37 @@ class GameScreen:
                     piece.anim_progress = 1.0
                 self.pending_move = None
             return
-        # Our move was accepted — animation already started on click
-        # Update cooldown
-        from_r, from_c = data["from_row"], data["from_col"]
-        to_r, to_c = data["to_row"], data["to_col"]
 
+        to_r, to_c = data["to_row"], data["to_col"]
         piece = self._piece_at(to_r, to_c)
         if piece:
             piece.cooldown_total = data.get("cooldown", COOLDOWNS.get(piece.piece_type, 1.0))
             piece.last_move_time = time.time()
+            if data.get("promoted"):
+                piece.piece_type = "queen"
+                piece.cooldown_total = COOLDOWNS.get("queen", 5.0)
 
         self.pending_move = None
 
-        # Handle capture
         if data.get("captured"):
             self._apply_capture(data["captured"])
+
+        # Castling: animate rook
+        cr = data.get("castling_rook")
+        if cr:
+            self._apply_castling_rook(cr)
+
+        # EP square for future highlighting
+        ep = data.get("en_passant_square")
+        self.en_passant_square = tuple(ep) if ep else None
+
+        # Opponent king in check → their CD resets (visual only, server already reset it)
+        if data.get("opponent_king_in_check"):
+            opp_color = "black" if self.my_color == "white" else "white"
+            for p in self.pieces:
+                if p.alive and p.piece_type == "king" and p.color == opp_color:
+                    p.last_move_time = 0.0
+                    break
 
     def _on_opponent_move(self, data):
         from_r, from_c = data["from_row"], data["from_col"]
@@ -221,19 +268,44 @@ class GameScreen:
 
         piece = self._piece_at(from_r, from_c)
         if piece:
-            # Start animation
             old_x, old_y = self._board_to_screen(piece.row, piece.col)
             piece.anim_from_x = old_x
             piece.anim_from_y = old_y
             piece.anim_progress = 0.0
-
             piece.row = to_r
             piece.col = to_c
             piece.cooldown_total = data.get("cooldown", COOLDOWNS.get(piece.piece_type, 1.0))
             piece.last_move_time = time.time()
+            if data.get("promoted"):
+                piece.piece_type = "queen"
+                piece.cooldown_total = COOLDOWNS.get("queen", 5.0)
 
         if data.get("captured"):
             self._apply_capture(data["captured"])
+
+        cr = data.get("castling_rook")
+        if cr:
+            self._apply_castling_rook(cr)
+
+        ep = data.get("en_passant_square")
+        self.en_passant_square = tuple(ep) if ep else None
+
+        # My king is in check → reset its cooldown
+        if data.get("my_king_in_check"):
+            for p in self.pieces:
+                if p.alive and p.piece_type == "king" and p.color == self.my_color:
+                    p.last_move_time = 0.0
+                    break
+
+    def _apply_castling_rook(self, cr: dict):
+        """Animate the rook as part of a castling move."""
+        rook = self._piece_at(cr["row"], cr["from_col"])
+        if rook:
+            old_x, old_y = self._board_to_screen(rook.row, rook.col)
+            rook.anim_from_x = old_x
+            rook.anim_from_y = old_y
+            rook.anim_progress = 0.0
+            rook.col = cr["to_col"]
 
     def _apply_capture(self, cap_data: dict):
         """Remove captured piece and add visual effect."""
@@ -255,6 +327,19 @@ class GameScreen:
             self.game_result = "Défaite..."
         if reason == "opponent_disconnected":
             self.game_result += " (adversaire déconnecté)"
+        self.rematch_waiting = False
+        self.replay_btn.enabled = True
+        self.replay_btn.text = "Rejouer"
+
+    def _on_rematch_waiting(self, data):
+        self.rematch_waiting = True
+        self.replay_btn.enabled = False
+        self.replay_btn.text = "En attente..."
+
+    def _on_rematch_unavailable(self, data):
+        self.rematch_waiting = False
+        self.replay_btn.enabled = True
+        self.replay_btn.text = "Rejouer"
 
     def _leave_game(self):
         socket_client.emit("room:leave")
@@ -272,6 +357,9 @@ class GameScreen:
         self._draw_pieces()
         self._draw_capture_effects()
         self._draw_ui()
+
+        if self._is_round_start_locked() and not self.game_over:
+            self._draw_round_start_countdown()
 
         if self.game_over:
             self._draw_game_over()
@@ -497,15 +585,50 @@ class GameScreen:
         color = (100, 255, 100) if "Victoire" in self.game_result else (255, 100, 100)
         arcade.draw_text(
             self.game_result,
-            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 + 30,
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 + 60,
             color, font_size=36,
             anchor_x="center", anchor_y="center", bold=True,
         )
         arcade.draw_text(
-            "Cliquez pour revenir au menu",
-            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 - 30,
+            "Lancez une revanche ou revenez au menu",
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 + 12,
             (180, 180, 180), font_size=14,
             anchor_x="center", anchor_y="center",
+        )
+        self.replay_btn.draw()
+        self.menu_btn.draw()
+        if self.rematch_waiting:
+            arcade.draw_text(
+                "En attente de l'adversaire...",
+                WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 - 130,
+                (210, 210, 220), font_size=14,
+                anchor_x="center", anchor_y="center",
+            )
+
+    def _draw_round_start_countdown(self):
+        arcade.draw_rectangle_filled(
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2,
+            WINDOW_WIDTH, WINDOW_HEIGHT,
+            (0, 0, 0, 95),
+        )
+
+        if self.round_start_countdown > 0.0:
+            value = max(1, math.ceil(self.round_start_countdown))
+            pulse = 1.0 + 0.1 * math.sin(time.time() * 14.0)
+            font_size = int(150 * pulse)
+            text = str(value)
+            color = (255, 70, 70) if value == 1 else (255, 230, 120)
+        else:
+            pulse = 1.0 + 0.08 * math.sin(time.time() * 18.0)
+            font_size = int(110 * pulse)
+            text = "FIGHT!"
+            color = (255, 255, 255)
+
+        arcade.draw_text(
+            text,
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 + 8,
+            color, font_size=font_size,
+            anchor_x="center", anchor_y="center", bold=True,
         )
 
     # ── Update ──────────────────────────────────────────────
@@ -521,10 +644,18 @@ class GameScreen:
             eff.timer += dt
         self.capture_effects = [e for e in self.capture_effects if e.timer < e.duration]
 
+        if self.round_start_countdown > 0.0:
+            self.round_start_countdown = max(0.0, self.round_start_countdown - dt)
+        elif self.round_start_fight_flash > 0.0:
+            self.round_start_fight_flash = max(0.0, self.round_start_fight_flash - dt)
+
     # ── Input ───────────────────────────────────────────────
 
     def on_mouse_motion(self, x, y, dx, dy):
         self.back_btn.check_hover(x, y)
+        if self.game_over:
+            self.replay_btn.check_hover(x, y)
+            self.menu_btn.check_hover(x, y)
         if self.dragging_piece:
             self.drag_x = x
             self.drag_y = y
@@ -532,10 +663,18 @@ class GameScreen:
 
     def on_mouse_press(self, x, y, button, modifiers):
         if self.game_over:
-            self._leave_game()
+            if button != arcade.MOUSE_BUTTON_LEFT:
+                return
+            if self.replay_btn.check_click(x, y):
+                return
+            if self.menu_btn.check_click(x, y):
+                return
             return
 
         if self.back_btn.check_click(x, y):
+            return
+
+        if self._is_round_start_locked():
             return
 
         if button != arcade.MOUSE_BUTTON_LEFT:
@@ -564,6 +703,8 @@ class GameScreen:
         self._clear_selection()
 
     def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        if self._is_round_start_locked() or self.game_over:
+            return
         self.back_btn.check_hover(x, y)
         if self.dragging_piece:
             self.drag_x = x
@@ -571,6 +712,8 @@ class GameScreen:
             self.drag_hover_square = self._screen_to_board(x, y)
 
     def on_mouse_release(self, x, y, button, modifiers):
+        if self._is_round_start_locked() or self.game_over:
+            return
         if button != arcade.MOUSE_BUTTON_LEFT:
             return
         if not self.dragging_piece:
@@ -600,6 +743,14 @@ class GameScreen:
     def _clear_selection(self):
         self.selected_piece = None
         self.valid_highlights.clear()
+
+    def _request_rematch(self):
+        if self.rematch_waiting:
+            return
+        self.rematch_waiting = True
+        self.replay_btn.enabled = False
+        self.replay_btn.text = "En attente..."
+        socket_client.emit("game:rematch_request")
 
     def _select_piece(self, piece: ClientPiece) -> bool:
         if piece.is_on_cooldown():
@@ -637,6 +788,10 @@ class GameScreen:
                     return self._piece_at(piece.row + direction, piece.col) is None
                 if abs(dc) == 1 and dr == direction and target is not None:
                     return True
+                # En passant
+                if (abs(dc) == 1 and dr == direction and target is None
+                        and self.en_passant_square == (to_r, to_c)):
+                    return True
             case "knight":
                 return (abs(dr), abs(dc)) in ((2, 1), (1, 2))
             case "bishop":
@@ -651,8 +806,25 @@ class GameScreen:
                 if (dr == 0) != (dc == 0):
                     return self._path_clear(piece, dr, dc)
             case "king":
-                return abs(dr) <= 1 and abs(dc) <= 1
+                if abs(dr) <= 1 and abs(dc) <= 1:
+                    return True
+                # Castling
+                if dr == 0 and abs(dc) == 2:
+                    return self._can_castle_client(piece, dc)
         return False
+
+    def _can_castle_client(self, king: ClientPiece, dc: int) -> bool:
+        """Client-side castling check for move highlighting."""
+        if king.last_move_time != 0.0:
+            return False
+        rook_col = 7 if dc > 0 else 0
+        path_cols = range(5, 7) if dc > 0 else range(1, 4)
+        rook = self._piece_at(king.row, rook_col)
+        if rook is None or rook.piece_type != "rook" or rook.color != king.color:
+            return False
+        if rook.last_move_time != 0.0:
+            return False
+        return all(self._piece_at(king.row, c) is None for c in path_cols)
 
     def _path_clear(self, piece: ClientPiece, dr: int, dc: int) -> bool:
         step_r = (1 if dr > 0 else -1) if dr != 0 else 0
@@ -667,6 +839,8 @@ class GameScreen:
 
     def _try_move(self, piece: ClientPiece, to_row: int, to_col: int):
         """Send move to server and optimistically animate."""
+        if self._is_round_start_locked():
+            return
         if piece.is_on_cooldown() or self.pending_move is not None:
             return
         if (to_row, to_col) not in self.valid_highlights:
@@ -702,6 +876,9 @@ class GameScreen:
 
     def on_key_press(self, key, modifiers):
         if key == arcade.key.ESCAPE:
+            if self.game_over:
+                self._leave_game()
+                return
             self._stop_drag()
             self._clear_selection()
 

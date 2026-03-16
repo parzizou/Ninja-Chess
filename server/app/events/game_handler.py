@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.events.rooms import room_manager, GameState
-from app.logic.board import Color
-from app.logic.moves import is_valid_move
+from app.logic.board import Color, PieceType
+from app.logic.moves import is_valid_move, is_in_check
 from app.logic.elo import compute_new_ratings
 from app.models.user import User
 from app.models.game import Game
@@ -73,10 +73,15 @@ def register_events(sio: socketio.AsyncServer):
 
         # Check if player is in a game — if so, opponent wins by disconnect
         game = room_manager.get_game_by_sid(sid)
+        rematch_other_sid = None
+        if game and game.finished and game.rematch_requests:
+            rematch_other_sid = game.black_sid if sid == game.white_sid else game.white_sid
         if game and not game.finished:
             await _handle_disconnect_forfeit(sio, sid, game)
 
         room_manager.leave_room(sid)
+        if rematch_other_sid:
+            await sio.emit("game:rematch_unavailable", {"reason": "Opponent left"}, to=rematch_other_sid)
         print(f"[WS] {username} disconnected (sid={sid})")
 
     # ── Room events ──────────────────────────────────────────
@@ -122,28 +127,21 @@ def register_events(sio: socketio.AsyncServer):
         # Start the game
         game = room_manager.start_game(room_id)
         if game:
-            state = game.board.to_state()
-            await sio.emit("room:ready", {
-                "room_id": room_id,
-                "white": game.white_username,
-                "black": game.black_username,
-                "state": state,
-                "your_color": "white",
-            }, to=game.white_sid)
-            await sio.emit("room:ready", {
-                "room_id": room_id,
-                "white": game.white_username,
-                "black": game.black_username,
-                "state": state,
-                "your_color": "black",
-            }, to=game.black_sid)
+            await _emit_room_ready(sio, game)
 
     @sio.on("room:leave")
     async def on_room_leave(sid, data=None):
+        game = room_manager.get_game_by_sid(sid)
+        rematch_other_sid = None
+        if game and game.finished and game.rematch_requests:
+            rematch_other_sid = game.black_sid if sid == game.white_sid else game.white_sid
+
         room_id = room_manager.leave_room(sid)
         if room_id:
             await sio.leave_room(sid, room_id)
             await sio.emit("room:list", room_manager.available_rooms())
+            if rematch_other_sid:
+                await sio.emit("game:rematch_unavailable", {"reason": "Opponent left"}, to=rematch_other_sid)
 
     @sio.on("room:refresh")
     async def on_room_refresh(sid, data=None):
@@ -196,36 +194,102 @@ def register_events(sio: socketio.AsyncServer):
             await sio.emit("game:move_ack", {"ok": False, "reason": "Invalid move"}, to=sid)
             return
 
-        # Execute move
+        opponent_color = Color.BLACK if player_color == Color.WHITE else Color.WHITE
+
+        # ── Castling: king moves 2 squares ───────────────────
+        castling_rook_data = None
+        is_castling = (
+            piece.piece_type.value == "king"
+            and abs(to_col - from_col) == 2
+            and from_row == to_row
+        )
+        if is_castling:
+            rook_from_col = 7 if to_col > from_col else 0
+            rook_to_col   = 5 if to_col > from_col else 3
+            rook = game.board.piece_at(from_row, rook_from_col)
+            if rook:
+                rook.col = rook_to_col
+                rook.last_move_time = now
+                castling_rook_data = {"row": from_row, "from_col": rook_from_col, "to_col": rook_to_col}
+
+        # ── En passant capture ────────────────────────────────
         captured = game.board.piece_at(to_row, to_col)
-        if captured:
+        ep_captured = None
+        is_ep = (
+            piece.piece_type.value == "pawn"
+            and from_col != to_col
+            and captured is None
+            and game.board.en_passant_square == (to_row, to_col)
+            and game.board.en_passant_expires > now
+        )
+        if is_ep and game.board.en_passant_pawn_pos:
+            ep_pawn = game.board.piece_at(*game.board.en_passant_pawn_pos)
+            if ep_pawn:
+                ep_pawn.alive = False
+                captured = ep_pawn
+                ep_captured = ep_pawn.to_dict(now)
+
+        if captured and not is_ep:
             captured.alive = False
 
+        # ── Apply move ────────────────────────────────────────
         piece.row = to_row
         piece.col = to_col
         piece.last_move_time = now
 
+        # ── Update en passant state ───────────────────────────
+        if piece.piece_type.value == "pawn" and abs(to_row - from_row) == 2:
+            ep_row = (from_row + to_row) // 2
+            game.board.en_passant_square   = (ep_row, to_col)
+            game.board.en_passant_pawn_pos = (to_row, to_col)
+            game.board.en_passant_expires  = now + 3.0
+        else:
+            game.board.en_passant_square   = None
+            game.board.en_passant_pawn_pos = None
+            game.board.en_passant_expires  = 0.0
+
+        # ── Promotion ─────────────────────────────────────────
+        promoted = False
+        promo_row = 7 if piece.color.value == "white" else 0
+        if piece.piece_type.value == "pawn" and piece.row == promo_row:
+            piece.piece_type = PieceType.QUEEN
+            promoted = True
+
+        # ── Check detection → reset opponent king cooldown ────
+        king_in_check = is_in_check(game.board, opponent_color)
+        if king_in_check:
+            opp_king = game.board.king(opponent_color)
+            if opp_king:
+                opp_king.last_move_time = 0.0
+
+        ep_sq = list(game.board.en_passant_square) if game.board.en_passant_square else None
+        cap_dict = ep_captured or (captured.to_dict(now) if captured else None)
+
         # ACK to mover
         await sio.emit("game:move_ack", {
             "ok": True,
-            "from_row": from_row,
-            "from_col": from_col,
-            "to_row": to_row,
-            "to_col": to_col,
+            "from_row": from_row, "from_col": from_col,
+            "to_row": to_row,     "to_col": to_col,
             "cooldown": piece.cooldown_duration,
-            "captured": captured.to_dict(now) if captured else None,
+            "captured": cap_dict,
+            "castling_rook": castling_rook_data,
+            "promoted": promoted,
+            "opponent_king_in_check": king_in_check,
+            "en_passant_square": ep_sq,
         }, to=sid)
 
         # Notify opponent
         await sio.emit("game:opponent_move", {
-            "from_row": from_row,
-            "from_col": from_col,
-            "to_row": to_row,
-            "to_col": to_col,
+            "from_row": from_row, "from_col": from_col,
+            "to_row": to_row,     "to_col": to_col,
             "piece_type": piece.piece_type.value,
             "piece_color": piece.color.value,
             "cooldown": piece.cooldown_duration,
-            "captured": captured.to_dict(now) if captured else None,
+            "captured": cap_dict,
+            "castling_rook": castling_rook_data,
+            "promoted": promoted,
+            "my_king_in_check": king_in_check,
+            "en_passant_square": ep_sq,
         }, to=opponent_sid)
 
         # Check for king capture
@@ -233,6 +297,34 @@ def register_events(sio: socketio.AsyncServer):
             game.finished = True
             game.winner_color = player_color
             await _finish_game(sio, game)
+
+    @sio.on("game:rematch_request")
+    async def on_game_rematch_request(sid, data=None):
+        game = room_manager.get_game_by_sid(sid)
+        if game is None:
+            await sio.emit("game:rematch_unavailable", {"reason": "No active room"}, to=sid)
+            return
+
+        if not game.finished:
+            await sio.emit("game:rematch_unavailable", {"reason": "Game not finished"}, to=sid)
+            return
+
+        if sid not in {game.white_sid, game.black_sid}:
+            await sio.emit("game:rematch_unavailable", {"reason": "Not in this game"}, to=sid)
+            return
+
+        game.rematch_requests.add(sid)
+
+        if len(game.rematch_requests) < 2:
+            await sio.emit("game:rematch_waiting", {"ok": True}, to=sid)
+            return
+
+        restarted = room_manager.restart_game(game.room_id)
+        if restarted is None:
+            await sio.emit("game:rematch_unavailable", {"reason": "Opponent unavailable"}, to=sid)
+            return
+
+        await _emit_room_ready(sio, restarted)
 
 
 async def _handle_disconnect_forfeit(sio: socketio.AsyncServer, disconnected_sid: str, game: GameState):
@@ -261,8 +353,27 @@ async def _finish_game(sio: socketio.AsyncServer, game: GameState):
         "reason": "king_captured",
     }, room=game.room_id)
 
+    game.rematch_requests.clear()
     await _record_game_result(game)
-    room_manager.remove_game(game.room_id)
+
+
+async def _emit_room_ready(sio: socketio.AsyncServer, game: GameState):
+    """Send a full game state payload to both players in the room."""
+    state = game.board.to_state()
+    await sio.emit("room:ready", {
+        "room_id": game.room_id,
+        "white": game.white_username,
+        "black": game.black_username,
+        "state": state,
+        "your_color": "white",
+    }, to=game.white_sid)
+    await sio.emit("room:ready", {
+        "room_id": game.room_id,
+        "white": game.white_username,
+        "black": game.black_username,
+        "state": state,
+        "your_color": "black",
+    }, to=game.black_sid)
 
 
 async def _record_game_result(game: GameState):

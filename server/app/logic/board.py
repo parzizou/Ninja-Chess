@@ -22,7 +22,7 @@ class Color(str, Enum):
 
 # Cooldown in seconds per piece type
 COOLDOWNS: dict[PieceType, float] = {
-    PieceType.PAWN: 1.0,
+    PieceType.PAWN: 1.5,
     PieceType.KNIGHT: 3.0,
     PieceType.BISHOP: 3.0,
     PieceType.ROOK: 4.0,
@@ -73,6 +73,10 @@ class Piece:
 @dataclass
 class Board:
     pieces: list[Piece] = field(default_factory=list)
+    # En passant: set after a pawn double-advance (3-second window)
+    en_passant_square: tuple[int, int] | None = None    # square where capturing pawn lands
+    en_passant_pawn_pos: tuple[int, int] | None = None  # position of the capturable pawn
+    en_passant_expires: float = 0.0
 
     def __post_init__(self):
         if not self.pieces:

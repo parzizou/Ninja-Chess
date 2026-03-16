@@ -33,6 +33,8 @@ from screens.home_screen import HomeScreen
 from screens.room_screen import RoomScreen
 from screens.waiting_screen import WaitingScreen
 from screens.game_screen import GameScreen
+from screens.ai_difficulty_screen import AIDifficultyScreen
+from screens.ai_game_screen import AIGameScreen
 from screens.leaderboard_screen import LeaderboardScreen
 from screens.profile_screen import ProfileScreen
 
@@ -54,6 +56,8 @@ class NinjaChessWindow(arcade.Window):
             "rooms": RoomScreen(self),
             "waiting": WaitingScreen(self),
             "game": GameScreen(self),
+            "ai_difficulty": AIDifficultyScreen(self),
+            "ai_game": AIGameScreen(self),
             "leaderboard": LeaderboardScreen(self),
             "profile": ProfileScreen(self),
         }
