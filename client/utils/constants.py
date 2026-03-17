@@ -4,8 +4,8 @@ import os
 import sys
 
 # ── Window ──────────────────────────────────────────────
-WINDOW_WIDTH = 900
-WINDOW_HEIGHT = 700
+WINDOW_WIDTH = 1200
+WINDOW_HEIGHT = 850
 WINDOW_TITLE = "Ninja Chess"
 
 # ── Board ───────────────────────────────────────────────

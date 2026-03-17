@@ -15,7 +15,34 @@ from utils.constants import (
 from utils.socket_client import socket_client
 
 
+def _key_display(key: int) -> str:
+    """Return a readable display string for an arcade key constant."""
+    if 97 <= key <= 122:   # a-z
+        return chr(key).upper()
+    if 48 <= key <= 57:    # 0-9
+        return chr(key)
+    special = {
+        arcade.key.F1: "F1",   arcade.key.F2: "F2",   arcade.key.F3: "F3",
+        arcade.key.F4: "F4",   arcade.key.F5: "F5",   arcade.key.F6: "F6",
+        arcade.key.F7: "F7",   arcade.key.F8: "F8",   arcade.key.F9: "F9",
+        arcade.key.F10: "F10", arcade.key.F11: "F11", arcade.key.F12: "F12",
+        arcade.key.SPACE: "Esp", arcade.key.ENTER: "Entr",
+        arcade.key.UP: "↑", arcade.key.DOWN: "↓",
+        arcade.key.LEFT: "←", arcade.key.RIGHT: "→",
+    }
+    return special.get(key, "?")
+
+
 # ── Rumble layout constants ──────────────────────────────────
+
+# Maps server "visual" tag -> sprite file suffix (without color prefix)
+VISUAL_TO_SPRITE = {
+    "unicorn":      "licorne",
+    "satanist":     "sataniste",
+    "archer_tower": "tour_archer",
+    "ghost":        "fantome",
+    "assassin":     "asassin",
+}
 
 SIDEBAR_WIDTH = 180
 RUMBLE_BOARD_PIXEL = BOARD_SIZE * SQUARE_SIZE  # 640
@@ -128,9 +155,12 @@ class RumbleGameScreen:
         self.match_result: str = ""
 
         # Augment activation state
-        self.augment_keybinds: dict[str, str] = {}  # key_char -> augment_id
+        self.augment_keybinds: dict[int, str] = {}  # key_constant -> augment_id
         self.targeting_augment: str | None = None  # augment_id waiting for target click
         self.activation_cds: dict[str, float] = {}  # augment_id -> last_activation
+
+        # Fog state: color -> expiry timestamp
+        self.fog_timers: dict[str, float] = {}
 
         self.sprite_cache: dict[str, arcade.Texture] = {}
         self._sprite_list = arcade.SpriteList()
@@ -164,6 +194,7 @@ class RumbleGameScreen:
         self.match_result = ""
         self.en_passant_square = None
         self.targeting_augment = None
+        self.fog_timers.clear()
         self.round_start_countdown = self.ROUND_START_COUNTDOWN
         self.round_start_fight_flash = self.ROUND_START_FIGHT_FLASH
 
@@ -186,6 +217,9 @@ class RumbleGameScreen:
     def _load_state(self, state: list[dict]):
         self.pieces.clear()
         for p in state:
+            tags_dict = dict(p.get("tags", {}))
+            if p.get("fog_hidden"):
+                tags_dict["fog_hidden"] = True
             self.pieces.append(RumblePiece(
                 piece_type=p["type"],
                 color=p["color"],
@@ -195,28 +229,49 @@ class RumbleGameScreen:
                 cooldown_remaining=p.get("cooldown_remaining", 0.0),
                 cooldown_total=COOLDOWNS.get(p["type"], 1.0),
                 piece_id=p.get("piece_id", 0),
-                tags=p.get("tags", {}),
+                tags=tags_dict,
             ))
 
     def _load_sprites(self):
-        for name in [
-            "white_king", "white_queen", "white_bishop", "white_knight", "white_rook", "white_pawn",
-            "black_king", "black_queen", "black_bishop", "black_knight", "black_rook", "black_pawn",
-        ]:
-            if name in self.sprite_cache:
-                continue
-            path = os.path.join(SPRITES_DIR, f"{name}.png")
-            if os.path.exists(path):
-                self.sprite_cache[name] = arcade.load_texture(path)
+        standard = [
+            "king", "queen", "bishop", "knight", "rook", "pawn",
+            "licorne", "fantome", "sataniste", "tour_archer", "asassin",
+        ]
+        for color in ("white", "black"):
+            for ptype in standard:
+                name = f"{color}_{ptype}"
+                if name not in self.sprite_cache:
+                    path = os.path.join(SPRITES_DIR, f"{name}.png")
+                    if os.path.exists(path):
+                        self.sprite_cache[name] = arcade.load_texture(path)
+        # Neutral pieces (no color prefix)
+        for name in ("duck",):
+            if name not in self.sprite_cache:
+                path = os.path.join(SPRITES_DIR, f"{name}.png")
+                if os.path.exists(path):
+                    self.sprite_cache[name] = arcade.load_texture(path)
 
     def _assign_keybinds(self):
-        """Auto-assign number keys 1-9 to activable augments."""
+        """Load player-chosen keybinds, or auto-assign number keys as fallback."""
         self.augment_keybinds.clear()
-        keys = "123456789"
+        custom = getattr(self.window, "rumble_keybinds", {})
+        if custom:
+            # Invert: {aug_id: key_int} -> {key_int: aug_id}
+            for aug in self.my_augments:
+                aug_id = aug.get("id", "")
+                if aug.get("is_activable") and aug_id in custom:
+                    self.augment_keybinds[custom[aug_id]] = aug_id
+            return
+        # Fallback: auto-assign number keys 1-9
+        num_keys = [
+            arcade.key.KEY_1, arcade.key.KEY_2, arcade.key.KEY_3,
+            arcade.key.KEY_4, arcade.key.KEY_5, arcade.key.KEY_6,
+            arcade.key.KEY_7, arcade.key.KEY_8, arcade.key.KEY_9,
+        ]
         idx = 0
         for aug in self.my_augments:
-            if aug.get("is_activable") and idx < len(keys):
-                self.augment_keybinds[keys[idx]] = aug["id"]
+            if aug.get("is_activable") and idx < len(num_keys):
+                self.augment_keybinds[num_keys[idx]] = aug.get("id", "")
                 idx += 1
 
     # ── Coordinate conversion (Rumble layout) ────────────────
@@ -262,8 +317,9 @@ class RumbleGameScreen:
             piece.cooldown_total = data.get("cooldown", COOLDOWNS.get(piece.piece_type, 1.0))
             piece.last_move_time = time.time()
             if data.get("promoted"):
-                piece.piece_type = "queen"
-                piece.cooldown_total = COOLDOWNS.get("queen", 5.0)
+                promo_type = data.get("promoted_to", "queen")
+                piece.piece_type = promo_type
+                piece.cooldown_total = COOLDOWNS.get(promo_type, 5.0)
 
         self.pending_move = None
 
@@ -290,6 +346,8 @@ class RumbleGameScreen:
 
         piece = self._piece_at(from_r, from_c)
         if piece:
+            # Moving reveals this piece (clears fog)
+            piece.tags.pop("fog_hidden", None)
             old_x, old_y = self._board_to_screen(piece.row, piece.col)
             piece.anim_from_x = old_x
             piece.anim_from_y = old_y
@@ -299,7 +357,8 @@ class RumbleGameScreen:
             piece.cooldown_total = data.get("cooldown", COOLDOWNS.get(piece.piece_type, 1.0))
             piece.last_move_time = time.time()
             if data.get("promoted"):
-                piece.piece_type = "queen"
+                promo_type = data.get("promoted_to", "queen")
+                piece.piece_type = promo_type
 
         if data.get("captured"):
             self._apply_capture(data["captured"])
@@ -327,9 +386,11 @@ class RumbleGameScreen:
             rook.col = cr["to_col"]
 
     def _apply_capture(self, cap):
+        # Support both regular piece dicts ("type" key) and augment effect dicts ("piece_type" key)
+        cap_piece_type = cap.get("piece_type") or cap.get("type")
         for p in self.pieces:
             if (p.alive and p.row == cap["row"] and p.col == cap["col"]
-                    and p.color == cap["color"] and p.piece_type == cap["type"]):
+                    and p.color == cap["color"] and p.piece_type == cap_piece_type):
                 p.alive = False
                 sx, sy = self._board_to_screen(p.row, p.col)
                 self.capture_effects.append(CaptureEffect(x=sx, y=sy))
@@ -455,9 +516,107 @@ class RumbleGameScreen:
                     piece_id=fx.get("piece_id", 0),
                     tags={"is_clone": True},
                 ))
-            elif fx_type in ("meteor_warning", "meteor_impact"):
+            elif fx_type == "meteor_warning":
                 sx, sy = self._board_to_screen(fx["row"], fx["col"])
                 self.capture_effects.append(CaptureEffect(x=sx, y=sy, duration=0.6))
+            elif fx_type == "meteor_impact":
+                sx, sy = self._board_to_screen(fx["row"], fx["col"])
+                self.capture_effects.append(CaptureEffect(x=sx, y=sy, duration=0.6))
+                # Remove piece if there was one at that square
+                for p in self.pieces:
+                    if p.alive and p.row == fx["row"] and p.col == fx["col"]:
+                        p.alive = False
+                        break
+            elif fx_type == "kamikaze":
+                # Remove the pawn that exploded
+                for p in self.pieces:
+                    if p.alive and p.row == fx["row"] and p.col == fx["col"]:
+                        p.alive = False
+                        sx, sy = self._board_to_screen(p.row, p.col)
+                        self.capture_effects.append(CaptureEffect(x=sx, y=sy))
+                        break
+            elif fx_type == "cd_max":
+                pid = fx.get("piece_id", 0)
+                for p in self.pieces:
+                    if p.piece_id == pid:
+                        p.last_move_time = time.time()
+                        break
+            elif fx_type == "cd_reset":
+                pid = fx.get("piece_id", 0)
+                for p in self.pieces:
+                    if p.piece_id == pid:
+                        p.last_move_time = 0.0
+                        break
+            elif fx_type == "micmic_mark":
+                pid = fx.get("piece_id", 0)
+                for p in self.pieces:
+                    if p.piece_id == pid:
+                        p.tags["booby_trapped"] = True
+                        break
+            elif fx_type == "micmic_explode":
+                sx, sy = self._board_to_screen(fx["row"], fx["col"])
+                self.capture_effects.append(CaptureEffect(x=sx, y=sy))
+            elif fx_type == "second_chance":
+                # King survived — revive it and stun it
+                king_id = fx.get("king_id", 0)
+                for p in self.pieces:
+                    if p.piece_id == king_id:
+                        p.alive = True
+                        p.tags["stun_until"] = time.time() + 8.0
+                        break
+            elif fx_type == "clone_capture":
+                # A clone pawn captured another piece
+                cap_r = fx.get("captured_row")
+                cap_c = fx.get("captured_col")
+                cap_type = fx.get("piece_type")
+                cap_color = fx.get("color")
+                if None not in (cap_r, cap_c, cap_type, cap_color):
+                    for p in self.pieces:
+                        if (p.alive and p.row == cap_r and p.col == cap_c
+                                and p.piece_type == cap_type and p.color == cap_color):
+                            p.alive = False
+                            sx, sy = self._board_to_screen(p.row, p.col)
+                            self.capture_effects.append(CaptureEffect(x=sx, y=sy))
+                            break
+                # Spawn the clone pawn
+                clone_r = fx.get("clone_row")
+                clone_c = fx.get("clone_col")
+                clone_color = fx.get("clone_color", self.my_color)
+                if clone_r is not None and clone_c is not None:
+                    self.pieces.append(RumblePiece(
+                        piece_type="pawn", color=clone_color,
+                        row=clone_r, col=clone_c,
+                        cooldown_total=COOLDOWNS.get("pawn", 1.5),
+                        last_move_time=time.time(),
+                        tags={"is_clone": True},
+                    ))
+            elif fx_type == "mark":
+                pid = fx.get("piece_id", 0)
+                dur = fx.get("duration", 8.0)
+                for p in self.pieces:
+                    if p.piece_id == pid:
+                        p.tags["marked_until"] = time.time() + dur
+                        break
+            elif fx_type == "shield":
+                pid = fx.get("piece_id", 0)
+                dur = fx.get("duration", 5.0)
+                for p in self.pieces:
+                    if p.piece_id == pid:
+                        p.tags["shield_until"] = time.time() + dur
+                        break
+            elif fx_type == "fog_start":
+                fog_color = fx.get("color")
+                duration = fx.get("duration", 10.0)
+                if fog_color and fog_color != self.my_color:
+                    self.fog_timers[fog_color] = time.time() + duration
+            elif fx_type == "promote":
+                pid = fx.get("piece_id", 0)
+                to_type = fx.get("to", "queen")
+                for p in self.pieces:
+                    if p.piece_id == pid:
+                        p.piece_type = to_type
+                        p.cooldown_total = COOLDOWNS.get(to_type, 5.0)
+                        break
 
     def _leave_game(self):
         socket_client.emit("rumble:leave_room")
@@ -500,9 +659,20 @@ class RumbleGameScreen:
             r, c = ent["row"], ent["col"]
             x, y = self._board_to_screen(r, c)
             if ent["type"] == "duck":
-                arcade.draw_circle_filled(x, y, SQUARE_SIZE * 0.3, (255, 220, 50))
-                arcade.draw_text("D", x, y, (80, 60, 0), font_size=16,
-                                 anchor_x="center", anchor_y="center", bold=True)
+                tex = self.sprite_cache.get("duck")
+                if tex:
+                    self._sprite_list.clear(deep=False)
+                    sp = arcade.Sprite(tex)
+                    sp.center_x = x
+                    sp.center_y = y
+                    sp.width = SQUARE_SIZE * 0.85
+                    sp.height = SQUARE_SIZE * 0.85
+                    self._sprite_list.append(sp)
+                    self._sprite_list.draw()
+                else:
+                    arcade.draw_circle_filled(x, y, SQUARE_SIZE * 0.3, (255, 220, 50))
+                    arcade.draw_text("D", x, y, (80, 60, 0), font_size=16,
+                                     anchor_x="center", anchor_y="center", bold=True)
             elif ent["type"] == "trap" and ent.get("owner") == self.my_color:
                 arcade.draw_rectangle_filled(x, y, SQUARE_SIZE * 0.5, SQUARE_SIZE * 0.5, (200, 50, 50, 100))
                 arcade.draw_text("T", x, y, (255, 100, 100, 150), font_size=12,
@@ -539,6 +709,9 @@ class RumbleGameScreen:
         for piece in self.pieces:
             if not piece.alive or piece is dragged:
                 continue
+            # Hide fog-covered opponent pieces
+            if piece.tags.get("fog_hidden") and piece.color != self.my_color:
+                continue
             target_x, target_y = self._board_to_screen(piece.row, piece.col)
             if piece.anim_progress < 1.0:
                 ax = piece.anim_from_x or target_x
@@ -562,6 +735,19 @@ class RumbleGameScreen:
             if stunned:
                 arcade.draw_text("STUN", draw_x, draw_y + SQUARE_SIZE * 0.35,
                                  (255, 50, 50), font_size=8, anchor_x="center", bold=True)
+            # Micmic booby-trapped pawn: show red outline (visible only to owner)
+            if piece.tags.get("booby_trapped") and piece.color == self.my_color:
+                r = SQUARE_SIZE * 0.42
+                arcade.draw_circle_outline(draw_x, draw_y, r, (255, 50, 50, 200), 3)
+            # Brouilleur ciblé: orange diamond on marked enemy piece
+            if piece.tags.get("marked_until", 0) > time.time():
+                r = SQUARE_SIZE * 0.36
+                arcade.draw_circle_outline(draw_x, draw_y, r, (255, 140, 0, 220), 2)
+            # Barrière noire: blue shield aura
+            if piece.tags.get("shield_until", 0) > time.time():
+                r = SQUARE_SIZE * 0.44
+                arcade.draw_circle_outline(draw_x, draw_y, r, (80, 140, 255, 220), 3)
+
             # Transformed badge
             transformed = piece.tags.get("transformed", "")
             if transformed:
@@ -572,7 +758,14 @@ class RumbleGameScreen:
             self._draw_piece_visual(dragged, self.drag_x, self.drag_y, 245, size_mult=1.08)
 
     def _draw_piece_visual(self, piece, x, y, alpha, size_mult=1.0):
-        tex = self.sprite_cache.get(piece.sprite_name)
+        # Check if the piece has a visual transform (licorne, fantome, etc.)
+        visual = piece.tags.get("transformed", "")
+        sprite_suffix = VISUAL_TO_SPRITE.get(visual)
+        if sprite_suffix:
+            tex = self.sprite_cache.get(f"{piece.color}_{sprite_suffix}")
+        else:
+            # Try colored sprite first, then neutral (e.g. duck has no color prefix)
+            tex = self.sprite_cache.get(piece.sprite_name) or self.sprite_cache.get(piece.piece_type)
         if tex:
             self._sprite_list.clear(deep=False)
             sp = arcade.Sprite(tex)
@@ -591,6 +784,12 @@ class RumbleGameScreen:
                 ("black", "king"): "k", ("black", "queen"): "q",
                 ("black", "rook"): "r", ("black", "bishop"): "b",
                 ("black", "knight"): "n", ("black", "pawn"): "p",
+                ("white", "licorne"): "U", ("black", "licorne"): "u",
+                ("white", "fantome"): "G", ("black", "fantome"): "g",
+                ("white", "sataniste"): "S", ("black", "sataniste"): "s",
+                ("white", "tour_archer"): "A", ("black", "tour_archer"): "a",
+                ("white", "asassin"): "X", ("black", "asassin"): "x",
+                ("neutral", "duck"): "D",
             }
             sym = symbols.get((piece.color, piece.piece_type), "?")
             bg = (240, 240, 240, alpha) if piece.color == "white" else (50, 50, 50, alpha)
@@ -646,16 +845,16 @@ class RumbleGameScreen:
         arcade.draw_text("Augments actifs", SIDEBAR_WIDTH / 2, WINDOW_HEIGHT - 65,
                          (255, 200, 80), font_size=10, anchor_x="center", bold=True)
 
-        # Keybind mapping (reversed)
-        id_to_key = {v: k for k, v in self.augment_keybinds.items()}
+        # Keybind mapping: aug_id -> display string
+        id_to_key = {aug_id: _key_display(k) for k, aug_id in self.augment_keybinds.items()}
 
         for i, aug in enumerate(self.my_augments):
             y = WINDOW_HEIGHT - 90 - i * 38
             if y < 30:
                 break
             aug_id = aug.get("id", "")
-            key = id_to_key.get(aug_id, "")
-            key_str = f"[{key}] " if key else ""
+            key_label = id_to_key.get(aug_id, "")
+            key_str = f"[{key_label}] " if key_label else ""
 
             # Activation CD display
             if aug.get("is_activable"):
@@ -785,6 +984,15 @@ class RumbleGameScreen:
         elif self.round_start_fight_flash > 0.0:
             self.round_start_fight_flash = max(0.0, self.round_start_fight_flash - dt)
 
+        # Clear fog when timer expires
+        now = time.time()
+        for color in list(self.fog_timers):
+            if now >= self.fog_timers[color]:
+                for p in self.pieces:
+                    if p.color == color:
+                        p.tags.pop("fog_hidden", None)
+                del self.fog_timers[color]
+
     # ── Input ────────────────────────────────────────────────
 
     def on_mouse_motion(self, x, y, dx, dy):
@@ -883,8 +1091,16 @@ class RumbleGameScreen:
         self.valid_highlights = self._get_basic_moves(piece)
         return True
 
+    def _has_augment(self, aug_id: str) -> bool:
+        return any(a.get("id") == aug_id for a in self.my_augments)
+
     def _get_basic_moves(self, piece) -> list[tuple[int, int]]:
         """Client-side basic move computation for highlighting."""
+        # Transition: king has queen moves, queen has king moves
+        if (piece.color == self.my_color and self._has_augment("transition")
+                and piece.piece_type in ("king", "queen")):
+            return self._get_transition_moves(piece)
+
         moves = []
         for r in range(8):
             for c in range(8):
@@ -905,36 +1121,104 @@ class RumbleGameScreen:
                     moves.append((r, c))
         return moves
 
+    def _get_transition_moves(self, piece) -> list[tuple[int, int]]:
+        """Compute moves for Transition augment: king↔queen movement roles."""
+        moves = []
+        entity_squares = {(e["row"], e["col"]) for e in self.entities if e["type"] in ("duck", "wall")}
+
+        if piece.piece_type == "king":
+            # King gets queen-range sliding moves
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]:
+                for dist in range(1, 8):
+                    r, c = piece.row + dr * dist, piece.col + dc * dist
+                    if not (0 <= r < 8 and 0 <= c < 8):
+                        break
+                    if (r, c) in entity_squares:
+                        break
+                    target = self._piece_at(r, c)
+                    if target:
+                        if target.color != piece.color:
+                            moves.append((r, c))
+                        break
+                    moves.append((r, c))
+        else:  # queen gets king-range (1 square)
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    r, c = piece.row + dr, piece.col + dc
+                    if not (0 <= r < 8 and 0 <= c < 8):
+                        continue
+                    if (r, c) in entity_squares:
+                        continue
+                    target = self._piece_at(r, c)
+                    if not target or target.color != piece.color:
+                        moves.append((r, c))
+        return moves
+
     def _basic_valid(self, piece, to_r, to_c, target) -> bool:
         dr = to_r - piece.row
         dc = to_c - piece.col
+        transformed = piece.tags.get("transformed", "")
+
         match piece.piece_type:
             case "pawn":
                 direction = 1 if piece.color == "white" else -1
-                start_row = 1 if piece.color == "white" else 6
                 if dc == 0 and dr == direction and target is None:
                     return True
-                if dc == 0 and dr == 2 * direction and (piece.row == start_row or True) and target is None:
+                if dc == 0 and dr == 2 * direction and target is None:
                     # Sprinteurs: always allow 2 if path clear
                     return self._piece_at(piece.row + direction, piece.col) is None
                 if abs(dc) == 1 and dr == direction and target is not None:
                     return True
                 if abs(dc) == 1 and dr == direction and target is None and self.en_passant_square == (to_r, to_c):
                     return True
-                # Backward (marche arriere) — simplified
+                # Backward (marche arriere)
                 backward = -direction
                 if dc == 0 and dr == backward and target is None:
                     return True
                 if abs(dc) == 1 and dr == backward and target is not None:
                     return True
             case "knight":
-                return (abs(dr), abs(dc)) in ((2, 1), (1, 2))
+                # Standard knight move
+                if (abs(dr), abs(dc)) in ((2, 1), (1, 2)):
+                    return True
+                # Licorne: also moves as bishop
+                if transformed == "unicorn":
+                    if abs(dr) == abs(dc) and dr != 0:
+                        return self._path_clear(piece, dr, dc)
+                # Assassins: can jump to any free enemy back-rank square
+                if transformed == "assassin":
+                    enemy_back = 7 if piece.color == "white" else 0
+                    if to_r == enemy_back and target is None:
+                        return True
+                return False  # not a standard knight move and no transform matched
             case "bishop":
+                # Fantomes: bishop ignores blocking pieces
+                if transformed == "ghost":
+                    return abs(dr) == abs(dc) and dr != 0
+                # Standard diagonal
                 if abs(dr) == abs(dc) and dr != 0:
                     return self._path_clear(piece, dr, dc)
+                # Satanistes: also capture forward 1 or 2 squares (same column)
+                if transformed == "satanist" and dc == 0:
+                    direction = 1 if piece.color == "white" else -1
+                    if dr == direction:  # 1 square forward, must be enemy
+                        return target is not None
+                    if dr == 2 * direction:  # 2 squares forward, must be enemy + path clear
+                        mid = self._piece_at(piece.row + direction, piece.col)
+                        return target is not None and mid is None
             case "rook":
                 if (dr == 0) != (dc == 0):
                     return self._path_clear(piece, dr, dc)
+                # Tours d'archers: also capture diagonally 1 or 2 squares
+                if transformed == "archer_tower" and abs(dr) == abs(dc) and dr != 0:
+                    if max(abs(dr), abs(dc)) == 1:  # 1 diagonal, must be enemy
+                        return target is not None
+                    if max(abs(dr), abs(dc)) == 2:  # 2 diagonal, must be enemy + path clear
+                        mid = self._piece_at(piece.row + (1 if dr > 0 else -1),
+                                             piece.col + (1 if dc > 0 else -1))
+                        return target is not None and mid is None
             case "queen":
                 if abs(dr) == abs(dc) and dr != 0:
                     return self._path_clear(piece, dr, dc)
@@ -998,31 +1282,16 @@ class RumbleGameScreen:
         if self.round_over or self._is_round_start_locked():
             return
 
-        # Augment activation via number keys
-        char = None
-        key_map = {
-            arcade.key.KEY_1: "1", arcade.key.KEY_2: "2", arcade.key.KEY_3: "3",
-            arcade.key.KEY_4: "4", arcade.key.KEY_5: "5", arcade.key.KEY_6: "6",
-            arcade.key.KEY_7: "7", arcade.key.KEY_8: "8", arcade.key.KEY_9: "9",
-        }
-        char = key_map.get(key)
-
-        if char and char in self.augment_keybinds:
-            aug_id = self.augment_keybinds[char]
-            # Find the augment data to check target_type
-            aug_data = None
-            for a in self.my_augments:
-                if a.get("id") == aug_id:
-                    aug_data = a
-                    break
+        # Augment activation via assigned keybind
+        if key in self.augment_keybinds:
+            aug_id = self.augment_keybinds[key]
+            aug_data = next((a for a in self.my_augments if a.get("id") == aug_id), None)
             if not aug_data:
                 return
-
             target_type = aug_data.get("target_type", "none")
             if target_type == "none":
                 socket_client.emit("rumble:activate", {"augment_id": aug_id})
             else:
-                # Enter targeting mode
                 self.targeting_augment = aug_id
 
     def on_text(self, text: str):

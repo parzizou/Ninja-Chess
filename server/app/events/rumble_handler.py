@@ -271,6 +271,8 @@ def register_rumble_events(sio: socketio.AsyncServer):
         ep_sq = list(match.board.en_passant_square) if match.board.en_passant_square else None
         cap_dict = ep_captured or (captured.to_dict(now) if captured else None)
 
+        promoted_to = piece.piece_type.value if promoted else None
+
         await sio.emit("rumble:move_ack", {
             "ok": True,
             "from_row": from_row, "from_col": from_col,
@@ -279,6 +281,7 @@ def register_rumble_events(sio: socketio.AsyncServer):
             "captured": cap_dict,
             "castling_rook": castling_rook_data,
             "promoted": promoted,
+            "promoted_to": promoted_to,
             "opponent_king_in_check": king_in_check,
             "en_passant_square": ep_sq,
             "effects": augment_effects,
@@ -293,6 +296,7 @@ def register_rumble_events(sio: socketio.AsyncServer):
             "captured": cap_dict,
             "castling_rook": castling_rook_data,
             "promoted": promoted,
+            "promoted_to": promoted_to,
             "my_king_in_check": king_in_check,
             "en_passant_square": ep_sq,
             "effects": augment_effects,

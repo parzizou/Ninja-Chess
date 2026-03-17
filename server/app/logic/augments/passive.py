@@ -476,9 +476,11 @@ class BrouillardDeGuerre(BaseAugment):
     def modify_visibility(self, state, viewer_color, ctx):
         fog_until = ctx.match.tags.get(f"fog_{ctx.player_color}", 0)
         if ctx.now < fog_until and viewer_color != ctx.player_color:
-            # Hide pieces on owner's half
+            # Mark pieces on owner's half as fog-hidden (don't remove — client needs them for moves)
             half_rows = {0, 1, 2, 3} if ctx.player_color == "white" else {4, 5, 6, 7}
-            return [p for p in state if not (p["color"] == ctx.player_color and p["row"] in half_rows)]
+            for p in state:
+                if p["color"] == ctx.player_color and p["row"] in half_rows:
+                    p["fog_hidden"] = True
         return state
 
 
@@ -587,6 +589,7 @@ class Dedoublement(BaseAugment):
             ctx.board.pieces.append(clone)
             return [
                 {"type": "clone_capture", "clone_row": r, "clone_col": c,
+                 "clone_color": ctx.player_color,
                  "captured_row": target.row, "captured_col": target.col,
                  "piece_type": target.piece_type.value, "color": target.color.value},
             ]

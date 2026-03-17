@@ -46,7 +46,7 @@ class NinjaChessWindow(arcade.Window):
     """Main application window with screen management."""
 
     def __init__(self):
-        super().__init__(WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE, resizable=False)
+        super().__init__(WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE, resizable=True)
         self.background_color = (30, 30, 30)
 
         self.user_data: dict | None = None

@@ -75,7 +75,8 @@ class Piece:
         if self.tags:
             visual_tags = {}
             for key in ("transformed", "is_wall", "is_duck", "booby_trapped",
-                        "stun_until", "invulnerable_until", "marked_until", "is_clone"):
+                        "stun_until", "invulnerable_until", "marked_until", "is_clone",
+                        "die_at"):
                 if key in self.tags:
                     visual_tags[key] = self.tags[key]
             if visual_tags:
