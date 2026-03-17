@@ -48,6 +48,9 @@ class NinjaChessWindow(arcade.Window):
     def __init__(self):
         super().__init__(WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE, resizable=True)
         self.background_color = (30, 30, 30)
+        # Logical → physical scale factors (updated on resize)
+        self._scale_x: float = 1.0
+        self._scale_y: float = 1.0
 
         self.user_data: dict | None = None
         self.game_init_data: dict | None = None
@@ -96,6 +99,20 @@ class NinjaChessWindow(arcade.Window):
                 # Token expired or invalid — stay on login screen
                 api.clear_token()
 
+    def on_resize(self, width: int, height: int):
+        super().on_resize(width, height)
+        self._scale_x = width  / WINDOW_WIDTH
+        self._scale_y = height / WINDOW_HEIGHT
+        # Keep the logical coordinate space at WINDOW_WIDTH x WINDOW_HEIGHT
+        try:
+            self.ctx.projection_2d = (0, WINDOW_WIDTH, 0, WINDOW_HEIGHT)
+        except Exception:
+            pass
+
+    def _logical(self, x: float, y: float) -> tuple[float, float]:
+        """Convert physical pixel coords to logical game coords."""
+        return x / self._scale_x, y / self._scale_y
+
     def show_screen(self, name: str):
         """Switch to a different screen."""
         if name in self.screens:
@@ -112,20 +129,24 @@ class NinjaChessWindow(arcade.Window):
         self.current_screen.on_update(delta_time)
 
     def on_mouse_motion(self, x, y, dx, dy):
-        self.current_screen.on_mouse_motion(x, y, dx, dy)
+        lx, ly = self._logical(x, y)
+        self.current_screen.on_mouse_motion(lx, ly, dx, dy)
 
     def on_mouse_press(self, x, y, button, modifiers):
-        self.current_screen.on_mouse_press(x, y, button, modifiers)
+        lx, ly = self._logical(x, y)
+        self.current_screen.on_mouse_press(lx, ly, button, modifiers)
 
     def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
         handler = getattr(self.current_screen, "on_mouse_drag", None)
         if handler:
-            handler(x, y, dx, dy, buttons, modifiers)
+            lx, ly = self._logical(x, y)
+            handler(lx, ly, dx, dy, buttons, modifiers)
 
     def on_mouse_release(self, x, y, button, modifiers):
         handler = getattr(self.current_screen, "on_mouse_release", None)
         if handler:
-            handler(x, y, button, modifiers)
+            lx, ly = self._logical(x, y)
+            handler(lx, ly, button, modifiers)
 
     def on_key_press(self, key, modifiers):
         self.current_screen.on_key_press(key, modifiers)

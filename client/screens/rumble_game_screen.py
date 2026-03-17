@@ -873,7 +873,7 @@ class RumbleGameScreen:
 
             arcade.draw_text(
                 f"{key_str}{aug.get('name', '?')}{suffix}",
-                10, y, color, font_size=9, bold=bool(key),
+                10, y, color, font_size=9, bold=bool(key_label),
             )
 
     def _draw_right_sidebar(self):
