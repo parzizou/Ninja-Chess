@@ -71,7 +71,13 @@ def register_events(sio: socketio.AsyncServer):
         session = await sio.get_session(sid)
         username = session.get("username", "?") if session else "?"
 
-        # Check if player is in a game — if so, opponent wins by disconnect
+        # Check for rumble match first
+        rumble = room_manager.get_rumble_match_by_sid(sid)
+        if rumble and not rumble.finished:
+            from app.events.rumble_handler import _handle_rumble_forfeit
+            await _handle_rumble_forfeit(sio, sid, rumble)
+
+        # Check if player is in a standard game — if so, opponent wins by disconnect
         game = room_manager.get_game_by_sid(sid)
         rematch_other_sid = None
         if game and game.finished and game.rematch_requests:

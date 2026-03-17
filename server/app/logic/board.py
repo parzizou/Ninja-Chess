@@ -38,7 +38,9 @@ class Piece:
     row: int  # 0-7, 0 = bottom (white side)
     col: int  # 0-7, 0 = left
     alive: bool = True
-    last_move_time: float = 0.0  # timestamp of last move
+    last_move_time: float = 0.0
+    piece_id: int = 0
+    tags: dict[str, Any] = field(default_factory=dict)  # timestamp of last move
 
     @property
     def cooldown_duration(self) -> float:
@@ -60,14 +62,25 @@ class Piece:
         return max(0.0, remaining)
 
     def to_dict(self, now: float | None = None) -> dict[str, Any]:
-        return {
+        d = {
             "type": self.piece_type.value,
             "color": self.color.value,
             "row": self.row,
             "col": self.col,
             "alive": self.alive,
             "cooldown_remaining": round(self.remaining_cooldown(now), 2),
+            "piece_id": self.piece_id,
         }
+        # Include relevant tags for client rendering
+        if self.tags:
+            visual_tags = {}
+            for key in ("transformed", "is_wall", "is_duck", "booby_trapped",
+                        "stun_until", "invulnerable_until", "marked_until", "is_clone"):
+                if key in self.tags:
+                    visual_tags[key] = self.tags[key]
+            if visual_tags:
+                d["tags"] = visual_tags
+        return d
 
 
 @dataclass
@@ -77,10 +90,18 @@ class Board:
     en_passant_square: tuple[int, int] | None = None    # square where capturing pawn lands
     en_passant_pawn_pos: tuple[int, int] | None = None  # position of the capturable pawn
     en_passant_expires: float = 0.0
+    _next_piece_id: int = 1
 
     def __post_init__(self):
         if not self.pieces:
             self._setup_initial_position()
+
+    def _add_piece(self, piece_type: PieceType, color: Color, row: int, col: int) -> Piece:
+        """Create a piece with auto-incremented ID and add it to the board."""
+        p = Piece(piece_type=piece_type, color=color, row=row, col=col, piece_id=self._next_piece_id)
+        self._next_piece_id += 1
+        self.pieces.append(p)
+        return p
 
     def _setup_initial_position(self):
         """Set up a standard chess starting position."""
@@ -91,17 +112,17 @@ class Board:
         ]
 
         for col, pt in enumerate(back_row):
-            self.pieces.append(Piece(piece_type=pt, color=Color.WHITE, row=0, col=col))
+            self._add_piece(pt, Color.WHITE, 0, col)
 
         for col in range(8):
-            self.pieces.append(Piece(piece_type=PieceType.PAWN, color=Color.WHITE, row=1, col=col))
+            self._add_piece(PieceType.PAWN, Color.WHITE, 1, col)
 
         # Black pieces (rows 6-7)
         for col in range(8):
-            self.pieces.append(Piece(piece_type=PieceType.PAWN, color=Color.BLACK, row=6, col=col))
+            self._add_piece(PieceType.PAWN, Color.BLACK, 6, col)
 
         for col, pt in enumerate(back_row):
-            self.pieces.append(Piece(piece_type=pt, color=Color.BLACK, row=7, col=col))
+            self._add_piece(pt, Color.BLACK, 7, col)
 
     def piece_at(self, row: int, col: int) -> Piece | None:
         """Return the alive piece at (row, col), or None."""
@@ -116,6 +137,10 @@ class Board:
             if p.alive and p.piece_type == PieceType.KING and p.color == color:
                 return p
         return None
+
+    def kings(self, color: Color) -> list[Piece]:
+        """Return all alive kings of the given color (for multi-king mode)."""
+        return [p for p in self.pieces if p.alive and p.piece_type == PieceType.KING and p.color == color]
 
     def to_state(self) -> list[dict[str, Any]]:
         """Serialize the board for sending to clients."""

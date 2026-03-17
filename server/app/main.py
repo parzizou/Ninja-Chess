@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from app.database import init_db
 from app.routers import auth, users
 from app.events.game_handler import register_events
+from app.events.rumble_handler import register_rumble_events
 
 # ── Helpers ──────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ sio = socketio.AsyncServer(
 )
 
 register_events(sio)
+register_rumble_events(sio)
 
 # ── FastAPI ──────────────────────────────────────────────
 

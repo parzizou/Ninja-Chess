@@ -41,3 +41,4 @@ Brouilleur ciblé (Activable : 16s) : marque une pièce ennemie 8s, son prochain
 Silence tactique (Activable : 30s) : pendant 5s, l'autre joueur ne voit pas les CD des pièces et ne peut pas lancer d'activables.
 Avantage du retard (Passif) : si tu as au moins 3 pièces de moins que l’adversaire, tes CD globaux sont réduits de 30%
 Carré magique : vous gagnez 20% de réduction de cd sur toutes vos pièces pour chaque pion allié positioné et en vie dans les 4 cases du centre.
+Aura farming : Cette augment ne fait rien mais si vous gagnez la prochaine manche, au prochain choix d'augments vous pourrez relancer vos propositions d'augments a l'infini et l'adversire n'en aura pas ce tour la.

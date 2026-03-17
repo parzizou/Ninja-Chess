@@ -18,6 +18,7 @@ class WaitingScreen:
     def __init__(self, window: arcade.Window):
         self.window = window
         self.room_name: str = ""
+        self.mode: str = "standard"  # "standard" or "rumble"
         self._t = 0.0
 
         self.cancel_btn = Button(
@@ -26,20 +27,31 @@ class WaitingScreen:
             color=(120, 40, 40), font_size=14,
         )
         socket_client.on("room:ready", self._on_room_ready)
+        socket_client.on("rumble:augment_phase", self._on_rumble_augment_phase)
 
     def on_show(self):
         self._t = 0.0
 
-    def set_room(self, room_data: dict):
+    def set_room(self, room_data: dict, mode: str = "standard"):
         self.room_name = room_data.get("name", "Room")
+        self.mode = mode
 
     def _cancel(self):
-        socket_client.emit("room:leave")
-        self.window.show_screen("rooms")
+        if self.mode == "rumble":
+            socket_client.emit("rumble:leave_room")
+            self.window.show_screen("rumble_rooms")
+        else:
+            socket_client.emit("room:leave")
+            self.window.show_screen("rooms")
 
     def _on_room_ready(self, data):
         self.window.game_init_data = data
         self.window.show_screen("game")
+
+    def _on_rumble_augment_phase(self, data):
+        """Rumble match starts — go to augment selection."""
+        self.window.rumble_augment_data = data
+        self.window.show_screen("augment_select")
 
     # ── Drawing ─────────────────────────────────────────────
 

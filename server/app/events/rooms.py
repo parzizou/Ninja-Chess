@@ -11,6 +11,7 @@ from typing import Any
 import socketio
 
 from app.logic.board import Board, Color
+from app.logic.rumble import RumbleMatch
 
 
 @dataclass
@@ -23,6 +24,7 @@ class Room:
     guest_sid: str | None = None
     guest_username: str | None = None
     guest_user_id: int | None = None
+    mode: str = "standard"  # "standard" or "rumble"
 
     @property
     def is_full(self) -> bool:
@@ -57,6 +59,7 @@ class RoomManager:
     def __init__(self):
         self.rooms: dict[str, Room] = {}
         self.games: dict[str, GameState] = {}
+        self.rumble_matches: dict[str, RumbleMatch] = {}  # match_id -> RumbleMatch
         self.sid_to_room: dict[str, str] = {}  # sid -> room_id
         self._next_id = 1
 
@@ -158,7 +161,45 @@ class RoomManager:
                 self.sid_to_room.pop(room.guest_sid, None)
 
     def available_rooms(self) -> list[dict[str, Any]]:
-        return [r.to_dict() for r in self.rooms.values() if not r.is_full]
+        return [r.to_dict() for r in self.rooms.values() if not r.is_full and r.mode == "standard"]
+
+    def available_rumble_rooms(self) -> list[dict[str, Any]]:
+        return [r.to_dict() for r in self.rooms.values() if not r.is_full and r.mode == "rumble"]
+
+    # ── Rumble-specific methods ─────────────────────────────
+
+    def start_rumble_match(self, room_id: str) -> RumbleMatch | None:
+        room = self.rooms.get(room_id)
+        if room is None or not room.is_full:
+            return None
+        match = RumbleMatch(
+            match_id=f"rumble_{room_id}",
+            room_id=room_id,
+            white_sid=room.creator_sid,
+            black_sid=room.guest_sid,
+            white_user_id=room.creator_user_id,
+            black_user_id=room.guest_user_id,
+            white_username=room.creator_username,
+            black_username=room.guest_username,
+        )
+        self.rumble_matches[match.match_id] = match
+        return match
+
+    def get_rumble_match_by_sid(self, sid: str) -> RumbleMatch | None:
+        room_id = self.sid_to_room.get(sid)
+        if room_id is None:
+            return None
+        match_id = f"rumble_{room_id}"
+        return self.rumble_matches.get(match_id)
+
+    def remove_rumble_match(self, match_id: str):
+        match = self.rumble_matches.pop(match_id, None)
+        if match:
+            room = self.rooms.pop(match.room_id, None)
+            if room:
+                self.sid_to_room.pop(room.creator_sid, None)
+                if room.guest_sid:
+                    self.sid_to_room.pop(room.guest_sid, None)
 
 
 # Singleton

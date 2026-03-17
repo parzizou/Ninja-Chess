@@ -37,6 +37,9 @@ from screens.ai_difficulty_screen import AIDifficultyScreen
 from screens.ai_game_screen import AIGameScreen
 from screens.leaderboard_screen import LeaderboardScreen
 from screens.profile_screen import ProfileScreen
+from screens.rumble_room_screen import RumbleRoomScreen
+from screens.augment_select_screen import AugmentSelectScreen
+from screens.rumble_game_screen import RumbleGameScreen
 
 
 class NinjaChessWindow(arcade.Window):
@@ -48,6 +51,8 @@ class NinjaChessWindow(arcade.Window):
 
         self.user_data: dict | None = None
         self.game_init_data: dict | None = None
+        self.rumble_augment_data: dict | None = None
+        self.rumble_round_data: dict | None = None
 
         # Create screens
         self.screens: dict[str, object] = {
@@ -60,6 +65,9 @@ class NinjaChessWindow(arcade.Window):
             "ai_game": AIGameScreen(self),
             "leaderboard": LeaderboardScreen(self),
             "profile": ProfileScreen(self),
+            "rumble_rooms": RumbleRoomScreen(self),
+            "augment_select": AugmentSelectScreen(self),
+            "rumble_game": RumbleGameScreen(self),
         }
         self.current_screen_name = "login"
         self.current_screen = self.screens["login"]

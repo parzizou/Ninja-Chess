@@ -140,6 +140,37 @@ La logique de validation est isolée dans `server/app/logic/` et ne dépend d'au
 
 Formule standard Elo (K=32). Deux scores distincts : un pour le mode Standard, un pour le mode Rumble. Score initial à la création d'un compte : **1000**.
 
+### Mode Rumble (spécification de référence)
+
+Le mode Rumble oppose 2 joueurs sur plusieurs manches.
+
+- Le premier joueur à gagner **4 manches** remporte la partie (format BO7).
+- Avant chaque manche, chaque joueur reçoit **3 augments aléatoires**.
+- Chaque augment proposé peut être **relancé une seule fois** (reroll individuel), puis le joueur sélectionne **1 augment final**.
+- Une fois les sélections validées, la manche démarre avec les augments actifs.
+- La condition de victoire d'une manche est la **capture du roi adverse**.
+- Si une règle/augment introduit plusieurs rois, tous les rois requis doivent être capturés pour perdre.
+- Chaque augment a une description claire de son effet et de sa durée (si activable).
+- Les augments sont conçus pour être **équilibrés** et **interactifs**, favorisant des stratégies variées.
+- les augments sont décits dans le fichier `client/Rumble_augments.txt` et peuvent être modifiés/ajoutés au fil du développement.
+- Les augments sont actives pour toutes les manches et donc se cumulent, car on en choisi un à chaque manche, mais on en perd jamais.
+- Il est cependant impossible de pouvoir choisir 2 fois le même augment, une fois qu'on a choisi un augment, il n'est plus disponible dans les propositions d'augments pour les manches suivantes.
+- Certaines augments sont incompatibles entre elles, par exemple : "transition" et "sexo-permutation" ne peuvent pas être actives en même temps, si un joueur a déjà l'une de ces augments, l'autre ne lui sera jamais proposée.
+#### Augments activables
+
+- Certaines augments sont activables manuellement et peuvent nécessiter une cible.
+- La **touche de déclenchement** est choisie au moment de la sélection de l'augment.
+- Si une cible est requise, la cible est la case de l'échiquier pointée par la souris au moment de l'activation.
+
+#### Interface utilisateur Rumble
+
+- L'échiquier est affiché au centre.
+- Une sidebar à gauche et une sidebar à droite affichent le profil de chaque joueur et la liste de ses augments actifs.
+- Le score est affiché dans un losange composé de **4 carrés** (style cases d'échecs) qui se remplissent à chaque manche gagnée.
+- Le remplissage des carrés utilise des teintes d'or plus ou moins foncées.
+- Quand les 4 carrés sont remplis, la victoire de match est atteinte.
+- L'échiquier Rumble utilise un code couleur distinct du mode Standard.
+
 ---
 
 ## Docker (serveur)

@@ -25,8 +25,9 @@ class HomeScreen:
                    on_click=lambda: self._play_standard(), font_size=16),
             Button(cx, cy + 50, 280, 50, "Jouer vs IA",
                    on_click=lambda: self.window.show_screen("ai_difficulty"), font_size=16),
-            Button(cx, cy - 10, 280, 50, "Jouer - Rumble (bientôt)",
-                   on_click=None, color=(80, 80, 90), font_size=14),
+            Button(cx, cy - 10, 280, 50, "Jouer - Rumble",
+                   on_click=lambda: self._play_rumble(), color=(140, 60, 100),
+                   hover_color=(170, 80, 120), font_size=16),
             Button(cx, cy - 70, 280, 50, "Classement",
                    on_click=lambda: self.window.show_screen("leaderboard"), font_size=16),
             Button(cx, cy - 130, 280, 50, "Mon Profil",
@@ -34,8 +35,7 @@ class HomeScreen:
             Button(cx, cy - 220, 180, 40, "Déconnexion",
                    on_click=self._logout, color=COLOR_DANGER, font_size=13),
         ]
-        # Rumble button disabled
-        self.buttons[2].enabled = False
+        # Rumble button is now enabled
 
     def _play_standard(self):
         # Connect to socket if not already connected
@@ -43,6 +43,12 @@ class HomeScreen:
         if user and not socket_client.connected:
             socket_client.connect(user["token"])
         self.window.show_screen("rooms")
+
+    def _play_rumble(self):
+        user = getattr(self.window, "user_data", None)
+        if user and not socket_client.connected:
+            socket_client.connect(user["token"])
+        self.window.show_screen("rumble_rooms")
 
     def _logout(self):
         clear_credentials()
