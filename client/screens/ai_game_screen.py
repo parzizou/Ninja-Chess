@@ -15,7 +15,9 @@ _PIECE_VALUES: dict[str, float] = {
     "rook": 5.0, "queen": 9.0, "king": 1000.0,
 }
 _THINK_DELAYS: dict[str, tuple[float, float]] = {
-    "easy": (1.2, 2.0), "medium": (0.5, 1.0), "hard": (0.1, 0.3),
+    "easy":   (1.8, 3.0),  # slow — same logic as medium but more hesitant
+    "medium": (0.8, 1.5),  # moderate — greedy + king-safety awareness
+    "hard":   (0.4, 0.7),  # fast but human-beatable — 1-ply gain/risk evaluation
 }
 _DIFF_LABELS = {"easy": "Facile", "medium": "Moyen", "hard": "Difficile"}
 _EP_WINDOW = 3.0  # seconds en passant remains valid
@@ -184,40 +186,6 @@ class AIGameScreen(GameScreen):
 
         return False
 
-    def _is_in_check_local(self, color: str) -> bool:
-        """Check if the king of *color* is attacked by any opponent piece."""
-        king = next((p for p in self.pieces if p.alive and p.piece_type == "king" and p.color == color), None)
-        if not king:
-            return False
-        opp = "black" if color == "white" else "white"
-        for p in self.pieces:
-            if p.alive and p.color == opp and self._can_attack_local(p, king.row, king.col):
-                return True
-        return False
-
-    def _can_attack_local(self, attacker: ClientPiece, to_r: int, to_c: int) -> bool:
-        """Can *attacker* reach (to_r, to_c)? (no castling, no EP)"""
-        dr = to_r - attacker.row
-        dc = to_c - attacker.col
-        match attacker.piece_type:
-            case "pawn":
-                direction = 1 if attacker.color == "white" else -1
-                return abs(dc) == 1 and dr == direction
-            case "knight":
-                return (abs(dr), abs(dc)) in ((2, 1), (1, 2))
-            case "bishop":
-                if abs(dr) == abs(dc) and dr != 0:
-                    return self._path_clear(attacker, dr, dc)
-            case "rook":
-                if (dr == 0) != (dc == 0):
-                    return self._path_clear(attacker, dr, dc)
-            case "queen":
-                if (abs(dr) == abs(dc) and dr != 0) or ((dr == 0) != (dc == 0)):
-                    return self._path_clear(attacker, dr, dc)
-            case "king":
-                return abs(dr) <= 1 and abs(dc) <= 1
-        return False
-
     # ── Player move ──────────────────────────────────────────
 
     def _try_move(self, piece: ClientPiece, to_row: int, to_col: int):
@@ -295,24 +263,62 @@ class AIGameScreen(GameScreen):
             return None
         match self.difficulty:
             case "easy":
-                return random.choice(all_moves)
+                return self._pick_easy(all_moves)
             case "medium":
                 return self._pick_medium(all_moves)
             case _:
                 return self._pick_hard(all_moves)
 
-    def _pick_medium(self, moves: list[tuple]) -> tuple:
+    # ── Shared helper: greedy capture from a move list ───────
+
+    def _greedy_capture(self, moves: list[tuple]) -> tuple:
+        """Prefer capturing the highest-value piece; otherwise random."""
         captures: list[tuple[float, ClientPiece, int, int]] = []
         for piece, r, c in moves:
             target = self._piece_at(r, c)
             if target and target.alive and target.color != self.ai_color:
                 captures.append((_PIECE_VALUES.get(target.piece_type, 0.0), piece, r, c))
         if captures:
-            captures.sort(reverse=True)
+            captures.sort(key=lambda x: x[0], reverse=True)
             top_val = captures[0][0]
             best = [(p, r, c) for v, p, r, c in captures if v == top_val]
             return random.choice(best)
         return random.choice(moves)
+
+    # ── Easy: greedy captures, slow ──────────────────────────
+
+    def _pick_easy(self, moves: list[tuple]) -> tuple:
+        """Same greedy logic as medium, but slower think delay."""
+        return self._greedy_capture(moves)
+
+    # ── Medium: greedy + king-safety awareness ───────────────
+
+    def _king_safe_after(self, piece: ClientPiece, to_r: int, to_c: int) -> bool:
+        """Returns True if after this move the AI king is NOT in check."""
+        captured = self._piece_at(to_r, to_c)
+        old_r, old_c = piece.row, piece.col
+        piece.row, piece.col = to_r, to_c
+        if captured:
+            captured.alive = False
+        safe = not self._is_in_check_local(self.ai_color)
+        piece.row, piece.col = old_r, old_c
+        if captured:
+            captured.alive = True
+        return safe
+
+    def _pick_medium(self, moves: list[tuple]) -> tuple:
+        """Greedy + avoid moves that leave own king in check."""
+        # 1. Filter out moves that expose own king
+        safe = [m for m in moves if self._king_safe_after(*m)]
+        pool = safe if safe else moves  # fallback if all moves leave king in check
+
+        # 2. If king is currently in check, prioritise escape moves
+        if self._is_in_check_local(self.ai_color):
+            escape = [m for m in pool if self._king_safe_after(*m)]
+            if escape:
+                pool = escape
+
+        return self._greedy_capture(pool)
 
     def _pick_hard(self, moves: list[tuple]) -> tuple:
         best_score = -math.inf

@@ -1,0 +1,43 @@
+tours en folie : - 50% de cd pour vos tours
+Droit des femmes : - 60% de cd pour votre dame
+grade d'honneur : - 50% de cd pour vos pièces mineures (cavalier et fou)
+sprinteurs : vos pions peuvent se déplacer de 2 cases a chaque tour
+couronne de lauriers : votre roi se déplace de 2 cases dans n'importe quelle direction 
+Marche arrière : vos pions peuvent se déplacer vers l'arrière nimporte quand
+Roi de la colline : gagnez si votre roi atteint la dernière rangée adverse
+assension en passant : si votre pion capture en passant il se transformera en dame
+sexo-permutation : votre roi et votre dame échangent leurs places (Activable : 15s)
+trasition : votre roi posède les déplacements de la dame mais la dame posède les déplacements du roi.
+Licorne : Début de la manche, vos cavaliers se transforment en licornes, ils peuvent se déplacer comme un cavalier ou comme un fou
+duck chess : faites apparaitre un canard sur une case vide du plateau, elle agit comme une pièce neutre, elle bloque les déplacements et les attaques (Activable : 7s) (le cannard disparait si on en pose un autre)
+corruption : une pièce adverse au hasard devient votre pièce, son cd est mis au maximum, impossible de l'utiliser immédiatement (Activable : 20s)
+pouvoir au peuple : vos pions peuvent promouvoir en roi, (Un joueur qui a deux rois doit tous les perdre pour perdre la partie)
+Maitre en passant, vos pions peuvent capturer en passant nimporte quel type de piece si elles sont juste a coté d'elles, pas seulement les pions
+sniperKing : votre roi tire un projectile vers la ligne arière adverse (devant lui), si une pièce adverse est touchée elle est détruite, le projectile ne traverse pas les pièces alliées (Activable : 13s)
+garde du corps : des pions apparaissent sur les cases libres autour de votre roi, ils bloquent les attaques ennemies (Activable : 30s)
+satanistes : début de la manche, vos fous se transforment en satanistes, ils peuvent se déplacer comme un fou et capturer vers l'avant de 1 ou 2 cases
+tours d'archers : début de la manche, vos tours se transforment en tours d'archers, elles peuvent se déplacer comme des tours et capturer en diagonale de 1 ou 2 cases
+formation tortue : transforme un pion allié en mur de pierre, il bloque les déplacements et les attaques ennemies, il ne peut pas être déplacé ou capturé (Activable : 25s)
+barrière noire, donne a une pièce allié un bouclier qui le rend complètement invulnérable pendant 5 secondes, mais la pièce meure après expiration du bouclier (Activable : 20s)
+piqure d'insuline : réinitialise le cd d'une pièce allié, elle peut être utilisée immédiatement après (Activable : 6s)
+encouragements : réduit de 50% le cd de toutes vos pièces pendant 10 secondes (Activable : 30s)
+météore : une météore s'écrase sur une case du plateau, détruisant toute pièce qui s'y trouve 2s plus tard, une zone rouge prévient de l'arrivée du météore (Activable : 15s)
+brouillard de guerre : pendant les 10 prmières secondes de la partie, l'adversaire ne voit pas les pièces de votre moitié de plateau.
+valkirie : votre dame fait une attaque de zone, elle peut capturer toutes les pièces adverses dans un rayon de 1 case autour d'elle mais elle ne peut pas le faire si son cd n'est pas a 0 (Activable : 15s)
+assasins : début du tour vos cavaliers se transforment en assasins (ils se déplcent comme des cavaliers mais peuvent aussi sauter sur la ligne arrière ennemie si une case est libre dessus)
+piège mortel : placez un piège sur une case vide du plateau, si une pièce adverse se déplace dessus elle est détruite, le piège disparait après activation (Activable : 20s)
+revanchard : quand un pièce adverse capture une de vos pièces, le cd de la pièce qui a effectué la capture est doublé
+fantomes : début de la manche, vos fous se transforment en fantomes, ils peuvent se déplacer comme des fous et traverser les pièces ennemies et alliés sans être bloqués
+flashbang : une pièce adverse ciblée est stun pendant 3 secondes, elle ne peut pas se déplacer ou attaquer mais elle peut être capturée (Activable : 15s)
+Amnésie : toutes les pièces adverses voient leur cd remis au maximum (Activable : 35s)
+Kamikaze : un pion allié de votre choix s'auto-détruit et capture toutes les pièces adverses adjacentes (Activable : 20s)
+Réincarnation : votre roi se téléporte instantanément sur n'importe quelle case libre (non en echec) de votre rangée de départ (Activable : 18s)
+Micmic : début de la manche, un de vos pions est désigné pour etre piégé (tu le vois en rouge), si ce pion est capturé, la pièce qui l'a capturé est détruite et toutes les pièces enemies sont stun pendant 5 secondes
+danse du sang : si une de vos pièce fait une capture, son cd est réduit de 70% auf pour les pions.
+seconde chance : la première fois par manche que votre roi est capturé, il tue la pièce qui le capture et ne meure pas, par contre il est étourdi pendant 8 secondes.
+Ombre jumelle : le prochain coup que vous ferez (sauf mouvement du roi) laissera une copie de cette pièce sur la case d'où elle a bougé, la copie a les mêmes caractéristiques que l'originale (Activable : 20s)
+dédoublement de personnalité : quand un pion a la posibilité de capturer deux pièces averses en meme temps et que le joueur fait l'une de ces deux capture, un nouveau pion capture l'autre, la copie a la meme caractéristique que l'originale
+Brouilleur ciblé (Activable : 16s) : marque une pièce ennemie 8s, son prochain mouvement prend +2s de CD.
+Silence tactique (Activable : 30s) : pendant 5s, l'autre joueur ne voit pas les CD des pièces et ne peut pas lancer d'activables.
+Avantage du retard (Passif) : si tu as au moins 3 pièces de moins que l’adversaire, tes CD globaux sont réduits de 30%
+Carré magique : vous gagnez 20% de réduction de cd sur toutes vos pièces pour chaque pion allié positioné et en vie dans les 4 cases du centre.

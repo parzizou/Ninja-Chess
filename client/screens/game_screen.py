@@ -355,6 +355,7 @@ class GameScreen:
         self._draw_board()
         self._draw_highlights()
         self._draw_pieces()
+        self._draw_check_indicators()
         self._draw_capture_effects()
         self._draw_ui()
 
@@ -553,6 +554,43 @@ class GameScreen:
             radius = 20 + 30 * t
             arcade.draw_circle_filled(eff.x, eff.y, radius, (255, 100, 50, alpha))
             arcade.draw_circle_outline(eff.x, eff.y, radius, (255, 200, 100, alpha), 2)
+
+    def _draw_check_indicators(self):
+        """Draw red glow on kings in check and threat arrows from attackers."""
+        pulse = 0.5 + 0.5 * math.sin(time.time() * 6.0)
+        for color in ("white", "black"):
+            attackers = self._find_attackers(color)
+            if not attackers:
+                continue
+            king = next((p for p in self.pieces if p.alive and p.piece_type == "king" and p.color == color), None)
+            if not king:
+                continue
+            kx, ky = self._board_to_screen(king.row, king.col)
+            # Pulsing red square overlay on king
+            arcade.draw_rectangle_filled(kx, ky, SQUARE_SIZE, SQUARE_SIZE, (220, 20, 20, int(90 + 60 * pulse)))
+            # Pulsing ring around king
+            arcade.draw_circle_outline(kx, ky, SQUARE_SIZE * (0.42 + 0.08 * pulse), (255, 60, 60, 200), 3)
+            # Threat arrow from each attacker (max 2 to avoid clutter)
+            for attacker in attackers[:2]:
+                ax, ay = self._board_to_screen(attacker.row, attacker.col)
+                self._draw_threat_arrow(ax, ay, kx, ky)
+
+    def _draw_threat_arrow(self, x1: float, y1: float, x2: float, y2: float):
+        """Draw an arrow from (x1,y1) toward (x2,y2), padded so it clears piece sprites."""
+        dx, dy = x2 - x1, y2 - y1
+        length = math.hypot(dx, dy)
+        if length < 1:
+            return
+        nx, ny = dx / length, dy / length
+        pad = SQUARE_SIZE * 0.4
+        sx, sy = x1 + nx * pad, y1 + ny * pad
+        ex, ey = x2 - nx * pad, y2 - ny * pad
+        color = (255, 80, 80, 200)
+        arcade.draw_line(sx, sy, ex, ey, color, 3)
+        head_len = 12
+        for side in (0.45, -0.45):
+            angle = math.atan2(ny, nx) + math.pi + side
+            arcade.draw_line(ex, ey, ex + head_len * math.cos(angle), ey + head_len * math.sin(angle), color, 3)
 
     def _draw_ui(self):
         self.back_btn.draw()
@@ -836,6 +874,48 @@ class GameScreen:
             if self._piece_at(r, c) is not None:
                 return False
         return True
+
+    def _can_attack_local(self, attacker: ClientPiece, to_r: int, to_c: int) -> bool:
+        """Can *attacker* reach (to_r, to_c)? Used for check detection (no castling/EP)."""
+        dr = to_r - attacker.row
+        dc = to_c - attacker.col
+        match attacker.piece_type:
+            case "pawn":
+                direction = 1 if attacker.color == "white" else -1
+                return abs(dc) == 1 and dr == direction
+            case "knight":
+                return (abs(dr), abs(dc)) in ((2, 1), (1, 2))
+            case "bishop":
+                if abs(dr) == abs(dc) and dr != 0:
+                    return self._path_clear(attacker, dr, dc)
+            case "rook":
+                if (dr == 0) != (dc == 0):
+                    return self._path_clear(attacker, dr, dc)
+            case "queen":
+                if (abs(dr) == abs(dc) and dr != 0) or ((dr == 0) != (dc == 0)):
+                    return self._path_clear(attacker, dr, dc)
+            case "king":
+                return abs(dr) <= 1 and abs(dc) <= 1
+        return False
+
+    def _is_in_check_local(self, color: str) -> bool:
+        """Return True if the king of *color* is attacked by any opponent piece."""
+        king = next((p for p in self.pieces if p.alive and p.piece_type == "king" and p.color == color), None)
+        if not king:
+            return False
+        opp = "black" if color == "white" else "white"
+        for p in self.pieces:
+            if p.alive and p.color == opp and self._can_attack_local(p, king.row, king.col):
+                return True
+        return False
+
+    def _find_attackers(self, king_color: str) -> list[ClientPiece]:
+        """Return opponent pieces currently attacking the king of *king_color*."""
+        king = next((p for p in self.pieces if p.alive and p.piece_type == "king" and p.color == king_color), None)
+        if not king:
+            return []
+        opp = "black" if king_color == "white" else "white"
+        return [p for p in self.pieces if p.alive and p.color == opp and self._can_attack_local(p, king.row, king.col)]
 
     def _try_move(self, piece: ClientPiece, to_row: int, to_col: int):
         """Send move to server and optimistically animate."""
