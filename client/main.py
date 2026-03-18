@@ -107,7 +107,16 @@ class NinjaChessWindow(arcade.Window):
         try:
             self.ctx.projection_2d = (0, WINDOW_WIDTH, 0, WINDOW_HEIGHT)
         except Exception:
-            pass
+            # Fallback for arcade 3.0 camera API
+            try:
+                cam = self.default_camera
+                cam.projection.left   = 0.0
+                cam.projection.right  = float(WINDOW_WIDTH)
+                cam.projection.bottom = 0.0
+                cam.projection.top    = float(WINDOW_HEIGHT)
+                cam.use()
+            except Exception:
+                pass
 
     def _logical(self, x: float, y: float) -> tuple[float, float]:
         """Convert physical pixel coords to logical game coords."""

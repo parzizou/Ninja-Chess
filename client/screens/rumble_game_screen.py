@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import random
 import time
 from dataclasses import dataclass
 
@@ -107,7 +108,17 @@ class CaptureEffect:
     x: float
     y: float
     timer: float = 0.0
-    duration: float = 0.4
+    duration: float = 0.75
+    # Fragment directions: list of (angle_rad, speed) pre-computed at spawn
+    fragments: list = None
+
+    def __post_init__(self):
+        n = 8
+        self.fragments = [
+            (math.radians(i * (360 / n) + random.uniform(-15, 15)),
+             random.uniform(38, 68))
+            for i in range(n)
+        ]
 
 
 @dataclass
@@ -153,6 +164,7 @@ class RumbleGameScreen:
         self.round_result: str = ""
         self.match_over: bool = False
         self.match_result: str = ""
+        self.round_over_delay: float = 0.0  # freeze-frame countdown before showing overlay
 
         # Augment activation state
         self.augment_keybinds: dict[int, str] = {}  # key_constant -> augment_id
@@ -192,6 +204,7 @@ class RumbleGameScreen:
         self.round_result = ""
         self.match_over = False
         self.match_result = ""
+        self.round_over_delay = 0.0
         self.en_passant_square = None
         self.targeting_augment = None
         self.fog_timers.clear()
@@ -312,7 +325,9 @@ class RumbleGameScreen:
             return
 
         to_r, to_c = data["to_row"], data["to_col"]
-        piece = self._piece_at(to_r, to_c)
+        # Use the piece that actually moved (pending_move.piece) rather than
+        # _piece_at which can return the captured piece still sitting at (to_r, to_c).
+        piece = self.pending_move.piece if self.pending_move else self._piece_at(to_r, to_c)
         if piece:
             piece.cooldown_total = data.get("cooldown", COOLDOWNS.get(piece.piece_type, 1.0))
             piece.last_move_time = time.time()
@@ -339,6 +354,13 @@ class RumbleGameScreen:
                     break
 
         self._process_effects(data.get("effects", []))
+
+        # Remove any duplicate spawned at the promoted square (server may send a spawn effect)
+        if data.get("promoted") and piece:
+            self.pieces = [
+                p for p in self.pieces
+                if not (p is not piece and p.alive and p.row == to_r and p.col == to_c)
+            ]
 
     def _on_opponent_move(self, data):
         from_r, from_c = data["from_row"], data["from_col"]
@@ -398,6 +420,7 @@ class RumbleGameScreen:
 
     def _on_round_over(self, data):
         self.round_over = True
+        self.round_over_delay = 2.0  # freeze-frame: board stays visible 2 s before overlay
         winner = data.get("round_winner", "")
         self.scores = data.get("scores", self.scores)
         self.match_over = data.get("match_over", False)
@@ -639,7 +662,7 @@ class RumbleGameScreen:
 
         if self._is_round_start_locked() and not self.round_over:
             self._draw_round_start_countdown()
-        if self.round_over:
+        if self.round_over and self.round_over_delay <= 0.0:
             self._draw_round_over()
 
     def _draw_board(self):
@@ -826,10 +849,37 @@ class RumbleGameScreen:
 
     def _draw_capture_effects(self):
         for eff in self.capture_effects:
-            t = eff.timer / eff.duration
-            alpha = int(255 * (1.0 - t))
-            radius = 20 + 30 * t
-            arcade.draw_circle_filled(eff.x, eff.y, radius, (255, 100, 50, alpha))
+            t = eff.timer / eff.duration  # 0 → 1
+
+            # ── Initial flash ring ────────────────────────────────
+            flash_t = min(1.0, t * 4.0)
+            ring_alpha = int(255 * (1.0 - flash_t))
+            if ring_alpha > 0:
+                arcade.draw_circle_outline(
+                    eff.x, eff.y, 8 + 36 * flash_t,
+                    (255, 240, 100, ring_alpha), 4,
+                )
+
+            # ── Central shrinking glow ────────────────────────────
+            core_alpha = int(220 * max(0.0, 1.0 - t * 1.5))
+            if core_alpha > 0:
+                arcade.draw_circle_filled(
+                    eff.x, eff.y, max(2, 14 * (1.0 - t)),
+                    (255, 140, 40, core_alpha),
+                )
+
+            # ── Flying fragments ──────────────────────────────────
+            for angle, speed in eff.fragments:
+                dist = speed * t
+                fx = eff.x + math.cos(angle) * dist
+                fy = eff.y + math.sin(angle) * dist
+                size = max(1.0, 7.0 * (1.0 - t))
+                frag_alpha = int(255 * max(0.0, 1.0 - t * 1.2))
+                if frag_alpha > 0:
+                    arcade.draw_rectangle_filled(
+                        fx, fy, size, size,
+                        (255, int(180 * (1.0 - t * 0.5)), 60, frag_alpha),
+                    )
 
     def _draw_left_sidebar(self):
         """Draw player's profile and augments."""
@@ -978,6 +1028,9 @@ class RumbleGameScreen:
         for eff in self.capture_effects:
             eff.timer += dt
         self.capture_effects = [e for e in self.capture_effects if e.timer < e.duration]
+
+        if self.round_over_delay > 0.0:
+            self.round_over_delay = max(0.0, self.round_over_delay - dt)
 
         if self.round_start_countdown > 0.0:
             self.round_start_countdown = max(0.0, self.round_start_countdown - dt)
@@ -1167,18 +1220,22 @@ class RumbleGameScreen:
                 if dc == 0 and dr == direction and target is None:
                     return True
                 if dc == 0 and dr == 2 * direction and target is None:
-                    # Sprinteurs: always allow 2 if path clear
-                    return self._piece_at(piece.row + direction, piece.col) is None
+                    # Only with Sprinteurs augment
+                    has_sprinters = any(a.get("id") == "sprinteurs" for a in self.my_augments)
+                    if has_sprinters:
+                        return self._piece_at(piece.row + direction, piece.col) is None
                 if abs(dc) == 1 and dr == direction and target is not None:
                     return True
                 if abs(dc) == 1 and dr == direction and target is None and self.en_passant_square == (to_r, to_c):
                     return True
-                # Backward (marche arriere)
-                backward = -direction
-                if dc == 0 and dr == backward and target is None:
-                    return True
-                if abs(dc) == 1 and dr == backward and target is not None:
-                    return True
+                # Backward movement — only with Marche arrière augment
+                has_marche = any(a.get("id") == "marche_arriere" for a in self.my_augments)
+                if has_marche:
+                    backward = -direction
+                    if dc == 0 and dr == backward and target is None:
+                        return True
+                    if abs(dc) == 1 and dr == backward and target is not None:
+                        return True
             case "knight":
                 # Standard knight move
                 if (abs(dr), abs(dc)) in ((2, 1), (1, 2)):
