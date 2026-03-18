@@ -9,6 +9,7 @@ import arcade
 from components.button import Button
 from screens.game_screen import GameScreen, ClientPiece, CaptureEffect
 from utils.constants import WINDOW_WIDTH, WINDOW_HEIGHT, COOLDOWNS
+from utils import sounds
 
 _PIECE_VALUES: dict[str, float] = {
     "pawn": 1.0, "knight": 3.0, "bishop": 3.0,
@@ -99,6 +100,30 @@ class AIGameScreen(GameScreen):
     def _request_rematch(self):
         self._restart_game()
 
+    # ── Override: use local _apply_move instead of socket ───
+
+    def _execute_move(self, piece, from_row, from_col, to_row, to_col, promotion_piece=None):
+        """Local version: apply move without server communication."""
+        from screens.game_screen import PendingMove
+        old_x, old_y = self._board_to_screen(piece.row, piece.col)
+        piece.anim_from_x = old_x
+        piece.anim_from_y = old_y
+        piece.anim_progress = 0.0
+
+        self._stop_drag()
+        self._clear_selection()
+
+        game_over = self._apply_move(piece, from_row, from_col, to_row, to_col,
+                                     self.my_color, promotion_choice=promotion_piece)
+        if game_over:
+            self.game_over = True
+            self.game_result = "Victoire !"
+            sounds.play("game_over_win")
+            return
+
+        lo, hi = _THINK_DELAYS.get(self.difficulty, (0.5, 1.0))
+        self.ai_think_timer = lo + random.random() * (hi - lo)
+
     # ── Shared post-move logic ───────────────────────────────
 
     def _apply_move(
@@ -107,6 +132,7 @@ class AIGameScreen(GameScreen):
         from_row: int, from_col: int,
         to_row: int, to_col: int,
         mover_color: str,
+        promotion_choice: str | None = None,
     ) -> bool:
         """Execute a move locally. Returns True if king was captured (game over)."""
         now = time.time()
@@ -157,6 +183,7 @@ class AIGameScreen(GameScreen):
         piece.col = to_col
         piece.cooldown_total = COOLDOWNS.get(piece.piece_type, 1.0)
         piece.last_move_time = now
+        sounds.play("move")
 
         # ── Update EP state ───────────────────────────────────
         if piece.piece_type == "pawn" and abs(to_row - from_row) == 2:
@@ -172,8 +199,9 @@ class AIGameScreen(GameScreen):
         # ── Promotion ─────────────────────────────────────────
         promo_row = 7 if mover_color == "white" else 0
         if piece.piece_type == "pawn" and piece.row == promo_row:
-            piece.piece_type = "queen"
-            piece.cooldown_total = COOLDOWNS.get("queen", 5.0)
+            promo_type = promotion_choice if promotion_choice in ("queen", "rook", "bishop", "knight") else "queen"
+            piece.piece_type = promo_type
+            piece.cooldown_total = COOLDOWNS.get(promo_type, 5.0)
 
         # ── Check: reset opponent king cooldown ───────────────
         opp_color = "black" if mover_color == "white" else "white"
@@ -185,35 +213,6 @@ class AIGameScreen(GameScreen):
                     break
 
         return False
-
-    # ── Player move ──────────────────────────────────────────
-
-    def _try_move(self, piece: ClientPiece, to_row: int, to_col: int):
-        if self._is_round_start_locked():
-            return
-        if piece.is_on_cooldown():
-            return
-        if (to_row, to_col) not in self.valid_highlights:
-            return
-
-        old_x, old_y = self._board_to_screen(piece.row, piece.col)
-        piece.anim_from_x = old_x
-        piece.anim_from_y = old_y
-        piece.anim_progress = 0.0
-
-        from_row, from_col = piece.row, piece.col
-        game_over = self._apply_move(piece, from_row, from_col, to_row, to_col, self.my_color)
-
-        self._stop_drag()
-        self._clear_selection()
-
-        if game_over:
-            self.game_over = True
-            self.game_result = "Victoire !"
-            return
-
-        lo, hi = _THINK_DELAYS.get(self.difficulty, (0.5, 1.0))
-        self.ai_think_timer = lo + random.random() * (hi - lo)
 
     # ── AI update loop ───────────────────────────────────────
 
@@ -232,6 +231,8 @@ class AIGameScreen(GameScreen):
             if p.alive and p.color == self.ai_color and not p.is_on_cooldown()
         ]
         if not available:
+            # All pieces on cooldown — poll again in 0.05s instead of every frame
+            self.ai_think_timer = 0.05
             return
 
         move = self._ai_pick_move(available)
@@ -247,10 +248,14 @@ class AIGameScreen(GameScreen):
             if game_over:
                 self.game_over = True
                 self.game_result = "Défaite..."
+                sounds.play("game_over_lose")
                 return
 
             lo, hi = _THINK_DELAYS.get(self.difficulty, (0.5, 1.0))
             self.ai_think_timer = lo + random.random() * (hi - lo)
+        else:
+            # No valid moves found — retry soon
+            self.ai_think_timer = 0.1
 
     # ── AI move selection ────────────────────────────────────
 

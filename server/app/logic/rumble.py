@@ -16,7 +16,7 @@ from app.logic.augments.registry import get_augment_by_id, get_random_augments
 from app.logic.moves import is_valid_move
 
 
-ROUNDS_TO_WIN = 4  # BO7
+ROUNDS_TO_WIN = 3  # BO5
 
 
 @dataclass

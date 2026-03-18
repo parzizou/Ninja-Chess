@@ -27,6 +27,7 @@ from utils.constants import WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE
 from utils.credentials import load_credentials
 from utils.api import api
 from utils.socket_client import socket_client
+from utils import sounds
 
 from screens.login_screen import LoginScreen
 from screens.home_screen import HomeScreen
@@ -57,6 +58,12 @@ class NinjaChessWindow(arcade.Window):
         self.rumble_augment_data: dict | None = None
         self.rumble_round_data: dict | None = None
 
+        # Fade transition state
+        self._fade_alpha: float = 0.0   # 0=transparent .. 255=black
+        self._fade_speed: float = 600.0  # alpha units per second
+        self._fade_target: str = ""      # screen to switch to mid-fade
+        self._fading_out: bool = False   # True = fading to black, False = fading in
+
         # Create screens
         self.screens: dict[str, object] = {
             "login": LoginScreen(self),
@@ -78,6 +85,9 @@ class NinjaChessWindow(arcade.Window):
         # Try auto-login
         self._try_auto_login()
 
+        # Load sound effects (generates WAV files on first run)
+        sounds.init_sounds()
+
     def _try_auto_login(self):
         """Attempt to log in with saved credentials."""
         creds = load_credentials()
@@ -94,7 +104,8 @@ class NinjaChessWindow(arcade.Window):
                     "elo_standard": profile.get("elo_standard", 1000),
                     "elo_rumble": profile.get("elo_rumble", 1000),
                 }
-                self.show_screen("home")
+                # Use instant switch for auto-login (no fade on startup)
+                self._do_switch("home")
             except Exception:
                 # Token expired or invalid — stay on login screen
                 api.clear_token()
@@ -123,19 +134,42 @@ class NinjaChessWindow(arcade.Window):
         return x / self._scale_x, y / self._scale_y
 
     def show_screen(self, name: str):
-        """Switch to a different screen."""
-        if name in self.screens:
-            self.current_screen_name = name
-            self.current_screen = self.screens[name]
-            if hasattr(self.current_screen, "on_show"):
-                self.current_screen.on_show()
+        """Switch to a different screen with a short fade transition."""
+        if name not in self.screens:
+            return
+        # Start fade-out toward the target screen
+        self._fade_target = name
+        self._fading_out = True
+
+    def _do_switch(self, name: str):
+        """Actually switch screens (called mid-fade at full black)."""
+        self.current_screen_name = name
+        self.current_screen = self.screens[name]
+        if hasattr(self.current_screen, "on_show"):
+            self.current_screen.on_show()
 
     def on_draw(self):
         self.clear()
         self.current_screen.on_draw()
+        # Draw fade overlay
+        if self._fade_alpha > 0:
+            arcade.draw_rectangle_filled(
+                WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2,
+                WINDOW_WIDTH, WINDOW_HEIGHT,
+                (0, 0, 0, int(self._fade_alpha)),
+            )
 
     def on_update(self, delta_time: float):
         self.current_screen.on_update(delta_time)
+
+        # Fade animation
+        if self._fading_out:
+            self._fade_alpha = min(255.0, self._fade_alpha + self._fade_speed * delta_time)
+            if self._fade_alpha >= 255.0:
+                self._fading_out = False
+                self._do_switch(self._fade_target)
+        elif self._fade_alpha > 0:
+            self._fade_alpha = max(0.0, self._fade_alpha - self._fade_speed * delta_time)
 
     def on_mouse_motion(self, x, y, dx, dy):
         lx, ly = self._logical(x, y)

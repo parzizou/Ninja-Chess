@@ -91,7 +91,17 @@ class TextInput:
         if key == arcade.key.BACKSPACE:
             self.text = self.text[:-1]
         elif key == arcade.key.V and (modifiers & arcade.key.MOD_CTRL):
-            pass  # clipboard paste not trivially supported
+            try:
+                import tkinter as tk
+                root = tk.Tk()
+                root.withdraw()
+                pasted = root.clipboard_get()
+                root.destroy()
+                for ch in pasted:
+                    if ch.isprintable() and ch not in ("\r", "\n"):
+                        self.text += ch
+            except Exception:
+                pass
 
     def on_text(self, text: str):
         if not self.focused:

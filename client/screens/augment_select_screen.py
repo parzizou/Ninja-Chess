@@ -247,16 +247,16 @@ class AugmentSelectScreen:
     def _draw_score(self, cx: float, cy: float):
         sq  = 14
         gap = 3
-        total_w = 4 * sq + 3 * gap
+        total_w = 3 * sq + 2 * gap
         for player, oy, label in [("white", sq + 5, "Vous"), ("black", -(sq + 5), "Adv.")]:
             score = self.scores.get(player, 0)
             x0 = cx - total_w / 2 + sq / 2
-            for i in range(4):
+            for i in range(3):
                 sx = x0 + i * (sq + gap)
                 sy = cy + oy
                 half = sq * 0.55
                 pts = [(sx, sy + half), (sx + half, sy), (sx, sy - half), (sx - half, sy)]
-                fill = GOLD_SCORES[min(i, 3)] if i < score else (38, 30, 52)
+                fill = GOLD_SCORES[i] if i < score else (38, 30, 52)
                 arcade.draw_polygon_filled(pts, fill)
                 for j in range(4):
                     p1, p2 = pts[j], pts[(j + 1) % 4]

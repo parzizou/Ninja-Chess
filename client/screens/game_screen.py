@@ -15,6 +15,7 @@ from utils.constants import (
     COOLDOWNS, SPRITES_DIR,
 )
 from utils.socket_client import socket_client
+from utils import sounds
 
 
 # ── Data classes ────────────────────────────────────────────
@@ -104,6 +105,11 @@ class GameScreen:
         self.round_start_countdown = self.ROUND_START_COUNTDOWN
         self.round_start_fight_flash = self.ROUND_START_FIGHT_FLASH
 
+        # Promotion popup state
+        self._promo_pending: dict | None = None  # {piece, from_row, from_col, to_row, to_col}
+        self._promo_choices = ["queen", "rook", "bishop", "knight"]
+        self._promo_hover: int = -1  # index of hovered promo choice
+
         self.sprite_cache: dict[str, arcade.Texture] = {}
         self._sprite_list = arcade.SpriteList()
 
@@ -140,6 +146,8 @@ class GameScreen:
         self._clear_selection()
         self._stop_drag()
         self.pending_move = None
+        self._promo_pending = None
+        self._promo_hover = -1
         self.capture_effects.clear()
         self.game_over = False
         self.game_result = ""
@@ -237,8 +245,8 @@ class GameScreen:
             piece.cooldown_total = data.get("cooldown", COOLDOWNS.get(piece.piece_type, 1.0))
             piece.last_move_time = time.time()
             if data.get("promoted"):
-                piece.piece_type = "queen"
-                piece.cooldown_total = COOLDOWNS.get("queen", 5.0)
+                piece.piece_type = data.get("promoted_to", "queen")
+                piece.cooldown_total = COOLDOWNS.get(piece.piece_type, 5.0)
 
         self.pending_move = None
 
@@ -261,6 +269,7 @@ class GameScreen:
                 if p.alive and p.piece_type == "king" and p.color == opp_color:
                     p.last_move_time = 0.0
                     break
+            sounds.play("check")
 
     def _on_opponent_move(self, data):
         from_r, from_c = data["from_row"], data["from_col"]
@@ -277,8 +286,8 @@ class GameScreen:
             piece.cooldown_total = data.get("cooldown", COOLDOWNS.get(piece.piece_type, 1.0))
             piece.last_move_time = time.time()
             if data.get("promoted"):
-                piece.piece_type = "queen"
-                piece.cooldown_total = COOLDOWNS.get("queen", 5.0)
+                piece.piece_type = data.get("promoted_to", "queen")
+                piece.cooldown_total = COOLDOWNS.get(piece.piece_type, 5.0)
 
         if data.get("captured"):
             self._apply_capture(data["captured"])
@@ -296,6 +305,7 @@ class GameScreen:
                 if p.alive and p.piece_type == "king" and p.color == self.my_color:
                     p.last_move_time = 0.0
                     break
+            sounds.play("check")
 
     def _apply_castling_rook(self, cr: dict):
         """Animate the rook as part of a castling move."""
@@ -315,6 +325,7 @@ class GameScreen:
                 p.alive = False
                 sx, sy = self._board_to_screen(p.row, p.col)
                 self.capture_effects.append(CaptureEffect(x=sx, y=sy))
+                sounds.play("capture")
                 break
 
     def _on_game_over(self, data):
@@ -323,8 +334,10 @@ class GameScreen:
         reason = data.get("reason", "")
         if winner == self.my_color:
             self.game_result = "Victoire !"
+            sounds.play("game_over_win")
         else:
             self.game_result = "Défaite..."
+            sounds.play("game_over_lose")
         if reason == "opponent_disconnected":
             self.game_result += " (adversaire déconnecté)"
         self.rematch_waiting = False
@@ -361,6 +374,9 @@ class GameScreen:
 
         if self._is_round_start_locked() and not self.game_over:
             self._draw_round_start_countdown()
+
+        if self._promo_pending:
+            self._draw_promotion_popup()
 
         if self.game_over:
             self._draw_game_over()
@@ -684,6 +700,8 @@ class GameScreen:
 
         if self.round_start_countdown > 0.0:
             self.round_start_countdown = max(0.0, self.round_start_countdown - dt)
+            if self.round_start_countdown == 0.0:
+                sounds.play("round_start")
         elif self.round_start_fight_flash > 0.0:
             self.round_start_fight_flash = max(0.0, self.round_start_fight_flash - dt)
 
@@ -694,6 +712,13 @@ class GameScreen:
         if self.game_over:
             self.replay_btn.check_hover(x, y)
             self.menu_btn.check_hover(x, y)
+        if self._promo_pending:
+            self._promo_hover = -1
+            for i, (px, py, bw, bh) in enumerate(self._promo_rects()):
+                if abs(x - px) <= bw / 2 and abs(y - py) <= bh / 2:
+                    self._promo_hover = i
+                    break
+            return
         if self.dragging_piece:
             self.drag_x = x
             self.drag_y = y
@@ -708,6 +733,14 @@ class GameScreen:
             if self.menu_btn.check_click(x, y):
                 return
             return
+
+        # Promotion popup takes priority
+        if self._promo_pending and button == arcade.MOUSE_BUTTON_LEFT:
+            for i, (px, py, bw, bh) in enumerate(self._promo_rects()):
+                if abs(x - px) <= bw / 2 and abs(y - py) <= bh / 2:
+                    self._confirm_promo(self._promo_choices[i])
+                    return
+            return  # click outside popup = ignore (don't cancel)
 
         if self.back_btn.check_click(x, y):
             return
@@ -917,6 +950,65 @@ class GameScreen:
         opp = "black" if king_color == "white" else "white"
         return [p for p in self.pieces if p.alive and p.color == opp and self._can_attack_local(p, king.row, king.col)]
 
+    # ── Promotion popup ─────────────────────────────────────
+
+    def _promo_rects(self) -> list[tuple[float, float, float, float]]:
+        """Return (x, y, w, h) for each promotion choice box, centered on screen."""
+        box = 72
+        gap = 10
+        total = len(self._promo_choices) * box + (len(self._promo_choices) - 1) * gap
+        x0 = WINDOW_WIDTH / 2 - total / 2 + box / 2
+        y = WINDOW_HEIGHT / 2
+        return [(x0 + i * (box + gap), y, box, box) for i in range(len(self._promo_choices))]
+
+    def _draw_promotion_popup(self):
+        # Dim overlay
+        arcade.draw_rectangle_filled(
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2,
+            WINDOW_WIDTH, WINDOW_HEIGHT, (0, 0, 0, 160),
+        )
+        arcade.draw_text(
+            "Choisir la promotion",
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2 + 68,
+            (240, 240, 240), font_size=18, anchor_x="center", anchor_y="center", bold=True,
+        )
+        color = self._promo_pending["piece"].color
+        for i, (px, py, bw, bh) in enumerate(self._promo_rects()):
+            hovered = (i == self._promo_hover)
+            bg = (80, 130, 200) if hovered else (45, 45, 60)
+            arcade.draw_rectangle_filled(px, py, bw, bh, bg)
+            arcade.draw_rectangle_outline(px, py, bw, bh, (200, 200, 220), 2)
+            piece_name = self._promo_choices[i]
+            tex = self.sprite_cache.get(f"{color}_{piece_name}")
+            if tex:
+                self._sprite_list.clear(deep=False)
+                sp = arcade.Sprite(tex)
+                sp.center_x, sp.center_y = px, py
+                sp.width = sp.height = bw * 0.78
+                self._sprite_list.append(sp)
+                self._sprite_list.draw()
+            else:
+                syms = {"queen": "♛", "rook": "♜", "bishop": "♝", "knight": "♞"}
+                sym = syms.get(piece_name, "?")
+                fg = (240, 240, 240) if color == "black" else (20, 20, 20)
+                arcade.draw_circle_filled(px, py, bw * 0.36, (200, 200, 200, 200) if color == "white" else (60, 60, 60, 200))
+                arcade.draw_text(sym, px, py, fg, font_size=28, anchor_x="center", anchor_y="center")
+            # Label
+            arcade.draw_text(
+                piece_name.capitalize(),
+                px, py - bw / 2 - 10,
+                (200, 200, 220), font_size=10, anchor_x="center", anchor_y="center",
+            )
+
+    def _confirm_promo(self, piece_type: str):
+        """Called when the player selects a promotion piece."""
+        p = self._promo_pending
+        self._promo_pending = None
+        self._promo_hover = -1
+        if p:
+            self._execute_move(p["piece"], p["from_row"], p["from_col"],
+                               p["to_row"], p["to_col"], promotion_piece=piece_type)
+
     def _try_move(self, piece: ClientPiece, to_row: int, to_col: int):
         """Send move to server and optimistically animate."""
         if self._is_round_start_locked():
@@ -926,13 +1018,28 @@ class GameScreen:
         if (to_row, to_col) not in self.valid_highlights:
             return
 
-        # Optimistic animation
+        # Detect pawn promotion → show popup before sending
+        promo_row = 7 if self.my_color == "white" else 0
+        if piece.piece_type == "pawn" and to_row == promo_row:
+            self._promo_pending = {
+                "piece": piece,
+                "from_row": piece.row, "from_col": piece.col,
+                "to_row": to_row, "to_col": to_col,
+            }
+            self._stop_drag()
+            self._clear_selection()
+            return
+
+        self._execute_move(piece, piece.row, piece.col, to_row, to_col)
+
+    def _execute_move(self, piece: ClientPiece, from_row: int, from_col: int,
+                      to_row: int, to_col: int, promotion_piece: str | None = None):
+        """Optimistically animate and send the move to server."""
         old_x, old_y = self._board_to_screen(piece.row, piece.col)
         piece.anim_from_x = old_x
         piece.anim_from_y = old_y
         piece.anim_progress = 0.0
 
-        from_row, from_col = piece.row, piece.col
         piece.row = to_row
         piece.col = to_col
 
@@ -947,17 +1054,25 @@ class GameScreen:
         self._stop_drag()
         self._clear_selection()
 
-        socket_client.emit("game:move", {
+        payload: dict = {
             "from_row": from_row,
             "from_col": from_col,
             "to_row": to_row,
             "to_col": to_col,
-        })
+        }
+        if promotion_piece:
+            payload["promotion_piece"] = promotion_piece
+        sounds.play("move")
+        socket_client.emit("game:move", payload)
 
     def on_key_press(self, key, modifiers):
         if key == arcade.key.ESCAPE:
             if self.game_over:
                 self._leave_game()
+                return
+            if self._promo_pending:
+                self._promo_pending = None
+                self._promo_hover = -1
                 return
             self._stop_drag()
             self._clear_selection()

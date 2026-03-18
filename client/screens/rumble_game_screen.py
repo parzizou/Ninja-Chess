@@ -14,6 +14,7 @@ from utils.constants import (
     BOARD_SIZE, SQUARE_SIZE, COOLDOWNS, SPRITES_DIR,
 )
 from utils.socket_client import socket_client
+from utils import sounds
 
 
 def _key_display(key: int) -> str:
@@ -444,6 +445,7 @@ class RumbleGameScreen:
             aug_id = data.get("augment_id", "")
             self.activation_cds[aug_id] = time.time()
             self._process_effects(data.get("effects", []))
+            sounds.play("augment")
         self.targeting_augment = None
 
     def _on_augment_activated(self, data):
@@ -964,10 +966,10 @@ class RumbleGameScreen:
         gap = 2
         for player_color, offset_y in [(self.my_color, -(size + gap)), ("black" if self.my_color == "white" else "white", size + gap)]:
             score = self.scores.get(player_color, 0)
-            for i in range(4):
-                sx = cx - (1.5 * (size + gap)) + i * (size + gap)
+            for i in range(3):
+                sx = cx - (1.0 * (size + gap)) + i * (size + gap)
                 sy = cy + offset_y
-                fill = GOLD[min(i, 3)] if i < score else (60, 60, 70)
+                fill = GOLD[i] if i < score else (60, 60, 70)
                 arcade.draw_rectangle_filled(sx, sy, size, size, fill)
                 arcade.draw_rectangle_outline(sx, sy, size, size, (120, 120, 130), 1)
 
@@ -1220,10 +1222,15 @@ class RumbleGameScreen:
                 if dc == 0 and dr == direction and target is None:
                     return True
                 if dc == 0 and dr == 2 * direction and target is None:
-                    # Only with Sprinteurs augment
+                    path_clear = self._piece_at(piece.row + direction, piece.col) is None
+                    # Standard rule: first move from starting row
+                    starting_row = 1 if piece.color == "white" else 6
+                    if piece.row == starting_row and path_clear:
+                        return True
+                    # Sprinteurs augment: can move 2 from anywhere
                     has_sprinters = any(a.get("id") == "sprinteurs" for a in self.my_augments)
-                    if has_sprinters:
-                        return self._piece_at(piece.row + direction, piece.col) is None
+                    if has_sprinters and path_clear:
+                        return True
                 if abs(dc) == 1 and dr == direction and target is not None:
                     return True
                 if abs(dc) == 1 and dr == direction and target is None and self.en_passant_square == (to_r, to_c):

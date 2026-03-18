@@ -255,11 +255,16 @@ def register_events(sio: socketio.AsyncServer):
             game.board.en_passant_expires  = 0.0
 
         # ── Promotion ─────────────────────────────────────────
+        _PROMO_MAP = {"queen": PieceType.QUEEN, "rook": PieceType.ROOK,
+                      "bishop": PieceType.BISHOP, "knight": PieceType.KNIGHT}
         promoted = False
+        promoted_to = None
         promo_row = 7 if piece.color.value == "white" else 0
         if piece.piece_type.value == "pawn" and piece.row == promo_row:
-            piece.piece_type = PieceType.QUEEN
+            promo_choice = data.get("promotion_piece", "queen")
+            piece.piece_type = _PROMO_MAP.get(promo_choice, PieceType.QUEEN)
             promoted = True
+            promoted_to = piece.piece_type.value
 
         # ── Check detection → reset opponent king cooldown ────
         king_in_check = is_in_check(game.board, opponent_color)
@@ -280,6 +285,7 @@ def register_events(sio: socketio.AsyncServer):
             "captured": cap_dict,
             "castling_rook": castling_rook_data,
             "promoted": promoted,
+            "promoted_to": promoted_to,
             "opponent_king_in_check": king_in_check,
             "en_passant_square": ep_sq,
         }, to=sid)
@@ -294,6 +300,7 @@ def register_events(sio: socketio.AsyncServer):
             "captured": cap_dict,
             "castling_rook": castling_rook_data,
             "promoted": promoted,
+            "promoted_to": promoted_to,
             "my_king_in_check": king_in_check,
             "en_passant_square": ep_sq,
         }, to=opponent_sid)

@@ -324,7 +324,7 @@ class ToursDArchers(BaseAugment):
 class Fantomes(BaseAugment):
     id = "fantomes"
     name = "Fantômes"
-    description = "Vos fous traversent les pièces ennemies et alliées"
+    description = "Vos fous traversent les pièces alliées (mais s'arrêtent sur les ennemies)"
     incompatible_with = ["satanistes"]
 
     def on_round_start(self, ctx):
@@ -338,7 +338,7 @@ class Fantomes(BaseAugment):
     def modify_moves(self, piece, moves, ctx):
         if piece.color.value != ctx.player_color or piece.tags.get("transformed") != "ghost":
             return moves
-        # Recalculate bishop moves ignoring blocking
+        # Recalculate bishop moves: pass through allies, stop at enemies
         moves_to_add = set()
         for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
             for dist in range(1, 8):
@@ -351,8 +351,10 @@ class Fantomes(BaseAugment):
                 target = ctx.piece_at(r, c)
                 if target:
                     if target.color.value != piece.color.value:
+                        # Can capture enemy — but stops here (doesn't pass through)
                         moves_to_add.add((r, c))
-                    # Ghost passes through — continue
+                        break
+                    # Allied piece: ghost passes through — continue
                 else:
                     moves_to_add.add((r, c))
         # Replace standard bishop moves with ghost moves
