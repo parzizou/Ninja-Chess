@@ -47,9 +47,10 @@ VISUAL_TO_SPRITE = {
 }
 
 SIDEBAR_WIDTH = 180
+TOP_BAR_HEIGHT = 60  # dedicated top bar so score diamond and player names never collide
 RUMBLE_BOARD_PIXEL = BOARD_SIZE * SQUARE_SIZE  # 640
 RUMBLE_BOARD_OFFSET_X = SIDEBAR_WIDTH + (WINDOW_WIDTH - 2 * SIDEBAR_WIDTH - RUMBLE_BOARD_PIXEL) // 2
-RUMBLE_BOARD_OFFSET_Y = (WINDOW_HEIGHT - RUMBLE_BOARD_PIXEL) // 2
+RUMBLE_BOARD_OFFSET_Y = (WINDOW_HEIGHT - TOP_BAR_HEIGHT - RUMBLE_BOARD_PIXEL) // 2
 
 # Rumble board colors (distinct from standard)
 RUMBLE_LIGHT = (200, 190, 220)
@@ -201,7 +202,7 @@ class RumbleGameScreen:
         self._sprite_list = arcade.SpriteList()
 
         self.back_btn = Button(
-            80, WINDOW_HEIGHT - 25, 100, 30, "← Quitter",
+            70, WINDOW_HEIGHT - TOP_BAR_HEIGHT // 2, 100, 30, "← Quitter",
             on_click=self._leave_game, color=(80, 40, 40), font_size=12,
         )
 
@@ -960,23 +961,25 @@ class RumbleGameScreen:
 
     def _draw_left_sidebar(self):
         """Draw player's profile and augments."""
+        # Background (full height, top bar drawn on top)
         arcade.draw_rectangle_filled(SIDEBAR_WIDTH / 2, WINDOW_HEIGHT / 2,
                                      SIDEBAR_WIDTH, WINDOW_HEIGHT, (35, 30, 45))
+        content_top = WINDOW_HEIGHT - TOP_BAR_HEIGHT  # content starts below the top bar
         user = getattr(self.window, "user_data", None)
         name = user["username"] if user else "Vous"
-        arcade.draw_text(name, SIDEBAR_WIDTH / 2, WINDOW_HEIGHT - 20,
+        arcade.draw_text(name, SIDEBAR_WIDTH / 2, content_top - 16,
                          (200, 200, 210), font_size=12, anchor_x="center", bold=True)
-        arcade.draw_text(f"({self.my_color})", SIDEBAR_WIDTH / 2, WINDOW_HEIGHT - 38,
+        arcade.draw_text(f"({self.my_color})", SIDEBAR_WIDTH / 2, content_top - 34,
                          (150, 150, 160), font_size=10, anchor_x="center")
 
-        arcade.draw_text("Augments actifs", SIDEBAR_WIDTH / 2, WINDOW_HEIGHT - 65,
+        arcade.draw_text("Augments actifs", SIDEBAR_WIDTH / 2, content_top - 58,
                          (255, 200, 80), font_size=10, anchor_x="center", bold=True)
 
         # Keybind mapping: aug_id -> display string
         id_to_key = {aug_id: _key_display(k) for k, aug_id in self.augment_keybinds.items()}
 
         for i, aug in enumerate(self.my_augments):
-            y = WINDOW_HEIGHT - 90 - i * 38
+            y = content_top - 82 - i * 38
             if y < 30:
                 break
             aug_id = aug.get("id", "")
@@ -1021,17 +1024,18 @@ class RumbleGameScreen:
         sx = WINDOW_WIDTH - SIDEBAR_WIDTH / 2
         arcade.draw_rectangle_filled(sx, WINDOW_HEIGHT / 2,
                                      SIDEBAR_WIDTH, WINDOW_HEIGHT, (35, 30, 45))
-        arcade.draw_text(self.opponent_name or "Adversaire", sx, WINDOW_HEIGHT - 20,
+        content_top = WINDOW_HEIGHT - TOP_BAR_HEIGHT
+        arcade.draw_text(self.opponent_name or "Adversaire", sx, content_top - 16,
                          (200, 200, 210), font_size=12, anchor_x="center", bold=True)
         opp_color = "black" if self.my_color == "white" else "white"
-        arcade.draw_text(f"({opp_color})", sx, WINDOW_HEIGHT - 38,
+        arcade.draw_text(f"({opp_color})", sx, content_top - 34,
                          (150, 150, 160), font_size=10, anchor_x="center")
 
-        arcade.draw_text("Augments actifs", sx, WINDOW_HEIGHT - 65,
+        arcade.draw_text("Augments actifs", sx, content_top - 58,
                          (255, 200, 80), font_size=10, anchor_x="center", bold=True)
 
         for i, aug in enumerate(self.opp_augments):
-            y = WINDOW_HEIGHT - 90 - i * 38
+            y = content_top - 82 - i * 38
             if y < 30:
                 break
             color = (180, 160, 100) if aug.get("is_activable") else (150, 150, 160)
@@ -1039,27 +1043,84 @@ class RumbleGameScreen:
                              color, font_size=9)
 
     def _draw_top_bar(self):
+        # Background strip
+        arcade.draw_rectangle_filled(
+            WINDOW_WIDTH / 2, WINDOW_HEIGHT - TOP_BAR_HEIGHT / 2,
+            WINDOW_WIDTH, TOP_BAR_HEIGHT, (20, 17, 28),
+        )
+        arcade.draw_line(0, WINDOW_HEIGHT - TOP_BAR_HEIGHT,
+                         WINDOW_WIDTH, WINDOW_HEIGHT - TOP_BAR_HEIGHT,
+                         (75, 65, 95), 1)
         self.back_btn.draw()
-        # Score diamond centered above board
         cx = RUMBLE_BOARD_OFFSET_X + RUMBLE_BOARD_PIXEL / 2
-        cy = WINDOW_HEIGHT - 20
-        self._draw_score_diamond(cx, cy)
+        cy = WINDOW_HEIGHT - TOP_BAR_HEIGHT / 2
+        self._draw_score_display(cx, cy)
+
+    def _draw_score_display(self, cx, cy):
+        """Two groups of 3 diamond pips flanking a thin divider."""
+        opp_color = "black" if self.my_color == "white" else "white"
+        user = getattr(self.window, "user_data", None)
+        my_name = (user["username"] if user else "Vous")[:12]
+        opp_name = (self.opponent_name or "Adv.")[:12]
+
+        # Pip geometry: 13×13 square rotated 45° → diamond with ~9px half-diagonal
+        pip_size = 13
+        pip_step = 22   # center-to-center between pips in a group
+        # Group center offset from bar center: sep(20) + outermost pip half-diag(9) + pip_step(22)
+        g_offset = 51
+        g_left  = cx - g_offset
+        g_right = cx + g_offset
+
+        # "Manche N" near the bottom of the bar
         arcade.draw_text(
-            f"Manche {self.round_num}", cx, cy - 22,
-            (180, 180, 190), font_size=10, anchor_x="center", anchor_y="center",
+            f"Manche {self.round_num}", cx, cy - 17,
+            (155, 150, 178), font_size=9, anchor_x="center", anchor_y="center",
         )
 
-    def _draw_score_diamond(self, cx, cy):
-        size = 12
-        gap = 2
-        for player_color, offset_y in [(self.my_color, -(size + gap)), ("black" if self.my_color == "white" else "white", size + gap)]:
+        # Thin vertical separator between the two groups
+        arcade.draw_line(cx, cy + 17, cx, cy - 3, (85, 78, 108), 1)
+
+        for group_cx, player_color, name in (
+            (g_left,  self.my_color, my_name),
+            (g_right, opp_color,     opp_name),
+        ):
             score = self.scores.get(player_color, 0)
+
+            # Player name label
+            arcade.draw_text(name, group_cx, cy + 21,
+                             (185, 178, 205), font_size=8,
+                             anchor_x="center", anchor_y="center")
+
+            # 3 diamond pips
             for i in range(3):
-                sx = cx - (1.0 * (size + gap)) + i * (size + gap)
-                sy = cy + offset_y
-                fill = GOLD[i] if i < score else (60, 60, 70)
-                arcade.draw_rectangle_filled(sx, sy, size, size, fill)
-                arcade.draw_rectangle_outline(sx, sy, size, size, (120, 120, 130), 1)
+                px = group_cx + (i - 1) * pip_step
+                py = cy + 3
+                if i < score:
+                    gold = GOLD[min(i, len(GOLD) - 1)]
+                    # Soft glow halo
+                    arcade.draw_rectangle_filled(
+                        px, py, pip_size + 6, pip_size + 6,
+                        (gold[0], gold[1], gold[2], 40), tilt_angle=45,
+                    )
+                    # Main diamond
+                    arcade.draw_rectangle_filled(
+                        px, py, pip_size, pip_size, gold, tilt_angle=45,
+                    )
+                    # Bright edge
+                    arcade.draw_rectangle_outline(
+                        px, py, pip_size, pip_size,
+                        (255, 245, 190, 180), 1, tilt_angle=45,
+                    )
+                    # Tiny sheen
+                    arcade.draw_circle_filled(px - 2, py + 3, 2, (255, 255, 220, 160))
+                else:
+                    # Empty pip
+                    arcade.draw_rectangle_filled(
+                        px, py, pip_size, pip_size, (40, 37, 52), tilt_angle=45,
+                    )
+                    arcade.draw_rectangle_outline(
+                        px, py, pip_size, pip_size, (76, 70, 95), 1, tilt_angle=45,
+                    )
 
     def _draw_round_start_countdown(self):
         arcade.draw_rectangle_filled(
