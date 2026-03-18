@@ -193,7 +193,7 @@ class HomeScreen:
         elo_std = user.get("elo_standard", 1000) if user else 1000
         elo_rmb = user.get("elo_rumble", 1000) if user else 1000
 
-        info_y = WINDOW_HEIGHT - 140
+        info_y = WINDOW_HEIGHT / 2 + 255  # inside panel (panel top = WINDOW_HEIGHT/2+295)
         arcade.draw_rectangle_filled(cx, info_y, 340, 52, (28, 26, 40, 200))
         arcade.draw_rectangle_outline(cx, info_y, 340, 52, (70, 60, 95), 1)
 

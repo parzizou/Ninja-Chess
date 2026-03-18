@@ -335,7 +335,7 @@ class Valkirie(BaseAugment):
             return {"ok": False, "reason": "Dame introuvable"}
         if queen.is_on_cooldown(ctx.now):
             return {"ok": False, "reason": "Dame en cooldown"}
-        effects = []
+        effects = [{"type": "valkirie_pulse", "queen_row": queen.row, "queen_col": queen.col}]
         for dr in (-1, 0, 1):
             for dc in (-1, 0, 1):
                 if dr == 0 and dc == 0:

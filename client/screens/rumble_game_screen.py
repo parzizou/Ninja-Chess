@@ -123,6 +123,26 @@ class CaptureEffect:
 
 
 @dataclass
+class LaserEffect:
+    """Sniper beam: animated line from king column to board edge."""
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    age: float = 0.0
+    duration: float = 0.45
+
+
+@dataclass
+class PulseEffect:
+    """Expanding pulse rings from queen (Valkirie)."""
+    cx: float
+    cy: float
+    age: float = 0.0
+    duration: float = 0.6
+
+
+@dataclass
 class PendingMove:
     piece: RumblePiece
     from_row: int
@@ -152,6 +172,8 @@ class RumbleGameScreen:
         self.drag_hover_square: tuple[int, int] | None = None
         self.pending_move: PendingMove | None = None
         self.capture_effects: list[CaptureEffect] = []
+        self.laser_effects: list[LaserEffect] = []
+        self.pulse_effects: list[PulseEffect] = []
         self.en_passant_square: tuple[int, int] | None = None
 
         self.round_start_countdown = self.ROUND_START_COUNTDOWN
@@ -201,6 +223,8 @@ class RumbleGameScreen:
         self._stop_drag()
         self.pending_move = None
         self.capture_effects.clear()
+        self.laser_effects.clear()
+        self.pulse_effects.clear()
         self.round_over = False
         self.round_result = ""
         self.match_over = False
@@ -525,6 +549,19 @@ class RumbleGameScreen:
                 self.entities = [e for e in self.entities
                                  if not (e.get("type") == "trap"
                                          and e["row"] == fx["row"] and e["col"] == fx["col"])]
+                tx, ty = self._board_to_screen(fx["row"], fx["col"])
+                self.capture_effects.append(CaptureEffect(x=tx, y=ty, duration=0.8))
+            elif fx_type == "sniper_shot":
+                kr, kc = fx.get("king_row", 0), fx.get("king_col", 0)
+                kx, ky = self._board_to_screen(kr, kc)
+                direction = fx.get("direction", "up")
+                edge_row = 7 if direction == "up" else 0
+                ex, ey = self._board_to_screen(edge_row, kc)
+                self.laser_effects.append(LaserEffect(x1=kx, y1=ky, x2=ex, y2=ey))
+            elif fx_type == "valkirie_pulse":
+                qr, qc = fx.get("queen_row", 0), fx.get("queen_col", 0)
+                qx, qy = self._board_to_screen(qr, qc)
+                self.pulse_effects.append(PulseEffect(cx=qx, cy=qy))
             elif fx_type == "corruption":
                 pid = fx.get("piece_id", 0)
                 for p in self.pieces:
@@ -658,6 +695,8 @@ class RumbleGameScreen:
         self._draw_highlights()
         self._draw_pieces()
         self._draw_capture_effects()
+        self._draw_laser_effects()
+        self._draw_pulse_effects()
         self._draw_left_sidebar()
         self._draw_right_sidebar()
         self._draw_top_bar()
@@ -883,6 +922,42 @@ class RumbleGameScreen:
                         (255, int(180 * (1.0 - t * 0.5)), 60, frag_alpha),
                     )
 
+    def _draw_laser_effects(self):
+        for eff in self.laser_effects:
+            t = eff.age / eff.duration  # 0→1
+            alpha = int(255 * max(0.0, 1.0 - t * 1.4))
+            if alpha <= 0:
+                continue
+            # Outer glow
+            arcade.draw_line(eff.x1, eff.y1, eff.x2, eff.y2,
+                             (255, 200, 80, alpha // 4), 12)
+            # Mid glow
+            arcade.draw_line(eff.x1, eff.y1, eff.x2, eff.y2,
+                             (255, 240, 140, alpha // 2), 5)
+            # Core beam
+            arcade.draw_line(eff.x1, eff.y1, eff.x2, eff.y2,
+                             (255, 255, 255, alpha), 2)
+            # Impact flash at start
+            if t < 0.3:
+                flash_a = int(220 * (1.0 - t / 0.3))
+                arcade.draw_circle_filled(eff.x1, eff.y1, 8 * (1.0 - t / 0.3),
+                                          (255, 230, 120, flash_a))
+
+    def _draw_pulse_effects(self):
+        for eff in self.pulse_effects:
+            t = eff.age / eff.duration  # 0→1
+            for ring_i in range(3):
+                ring_t = t - ring_i * 0.15
+                if ring_t <= 0:
+                    continue
+                radius = ring_t * 120
+                alpha = int(200 * max(0.0, 1.0 - ring_t * 1.3))
+                if alpha <= 0:
+                    continue
+                width = max(1, int(4 * (1.0 - ring_t)))
+                arcade.draw_circle_outline(eff.cx, eff.cy, radius,
+                                           (200, 140, 255, alpha), width)
+
     def _draw_left_sidebar(self):
         """Draw player's profile and augments."""
         arcade.draw_rectangle_filled(SIDEBAR_WIDTH / 2, WINDOW_HEIGHT / 2,
@@ -909,16 +984,29 @@ class RumbleGameScreen:
             key_str = f"[{key_label}] " if key_label else ""
 
             # Activation CD display
+            ring_x = SIDEBAR_WIDTH - 14
+            ring_y = y + 4
+            ring_r = 7
             if aug.get("is_activable"):
                 last = self.activation_cds.get(aug_id, 0)
-                cd = aug.get("cooldown", 0)
-                remaining = max(0, cd - (time.time() - last)) if last > 0 else 0
+                cd_total = aug.get("cooldown", 0)
+                remaining = max(0.0, cd_total - (time.time() - last)) if last > 0 else 0.0
+                frac = (remaining / cd_total) if cd_total > 0 else 0.0
                 if remaining > 0:
                     color = (150, 80, 80)
-                    suffix = f" ({remaining:.0f}s)"
+                    suffix = f" {remaining:.0f}s"
+                    # CD ring: dark bg + red arc showing remaining fraction
+                    arcade.draw_circle_filled(ring_x, ring_y, ring_r, (40, 35, 50))
+                    arcade.draw_arc_filled(ring_x, ring_y, ring_r * 2, ring_r * 2,
+                                           (200, 70, 70, 220),
+                                           90 - frac * 360, 90)
+                    arcade.draw_circle_outline(ring_x, ring_y, ring_r, (160, 130, 180), 1)
                 else:
                     color = (180, 160, 100)
                     suffix = ""
+                    # Ready: solid green dot
+                    arcade.draw_circle_filled(ring_x, ring_y, ring_r, (50, 190, 80))
+                    arcade.draw_circle_outline(ring_x, ring_y, ring_r, (80, 220, 110), 1)
             else:
                 color = (150, 150, 160)
                 suffix = ""
@@ -1030,6 +1118,12 @@ class RumbleGameScreen:
         for eff in self.capture_effects:
             eff.timer += dt
         self.capture_effects = [e for e in self.capture_effects if e.timer < e.duration]
+        for eff in self.laser_effects:
+            eff.age += dt
+        self.laser_effects = [e for e in self.laser_effects if e.age < e.duration]
+        for eff in self.pulse_effects:
+            eff.age += dt
+        self.pulse_effects = [e for e in self.pulse_effects if e.age < e.duration]
 
         if self.round_over_delay > 0.0:
             self.round_over_delay = max(0.0, self.round_over_delay - dt)
@@ -1258,9 +1352,11 @@ class RumbleGameScreen:
                         return True
                 return False  # not a standard knight move and no transform matched
             case "bishop":
-                # Fantomes: bishop ignores blocking pieces
+                # Fantomes: ghost bishop passes through allies, but stops at enemies
                 if transformed == "ghost":
-                    return abs(dr) == abs(dc) and dr != 0
+                    if abs(dr) == abs(dc) and dr != 0:
+                        return self._ghost_path_clear(piece, dr, dc)
+                    return False
                 # Standard diagonal
                 if abs(dr) == abs(dc) and dr != 0:
                     return self._path_clear(piece, dr, dc)
@@ -1305,6 +1401,20 @@ class RumbleGameScreen:
             for ent in self.entities:
                 if ent["row"] == r and ent["col"] == c and ent["type"] in ("duck", "wall"):
                     return False
+        return True
+
+    def _ghost_path_clear(self, piece, dr, dc) -> bool:
+        """Ghost bishop: passes through allies freely, but stops at the first enemy."""
+        step_r = (1 if dr > 0 else -1) if dr != 0 else 0
+        step_c = (1 if dc > 0 else -1) if dc != 0 else 0
+        steps = max(abs(dr), abs(dc))
+        for i in range(1, steps):
+            r = piece.row + step_r * i
+            c = piece.col + step_c * i
+            mid = self._piece_at(r, c)
+            if mid and mid.color != piece.color:
+                return False  # enemy blocks the path
+            # Allied pieces are passed through (ghost)
         return True
 
     def _try_move(self, piece, to_row, to_col):
