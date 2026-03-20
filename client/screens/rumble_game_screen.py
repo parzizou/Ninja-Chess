@@ -1446,7 +1446,9 @@ class RumbleGameScreen:
                 if (dr == 0) != (dc == 0):
                     return self._path_clear(piece, dr, dc)
             case "king":
-                if abs(dr) <= 2 and abs(dc) <= 2:
+                if max(abs(dr), abs(dc)) == 1:  # standard 8 squares
+                    return True
+                if dr == 0 and abs(dc) == 2:    # castling
                     return True
         return False
 

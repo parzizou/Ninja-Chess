@@ -89,6 +89,7 @@ def register_rumble_events(sio: socketio.AsyncServer):
             await sio.emit("rumble:rerolled", {
                 "index": index,
                 "augment": new_aug.to_dict(),
+                "infinite": match.aura_farming_winner == color,
             }, to=sid)
 
     @sio.on("rumble:select_augment")

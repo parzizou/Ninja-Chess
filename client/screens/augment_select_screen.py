@@ -170,7 +170,7 @@ class AugmentSelectScreen:
         aug = data.get("augment")
         if 0 <= i < len(self.proposals) and aug:
             self.proposals[i] = aug
-            if i < len(self.reroll_used):
+            if i < len(self.reroll_used) and not data.get("infinite", False):
                 self.reroll_used[i] = True
 
     def _on_confirmed(self, data):
