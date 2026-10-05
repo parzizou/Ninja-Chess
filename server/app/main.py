@@ -8,6 +8,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import Request
 
 from app.database import init_db
 from app.routers import auth, users
@@ -20,6 +21,7 @@ _origins_raw = os.getenv("ALLOWED_ORIGINS", "*").strip()
 CORS_ORIGINS: list[str] | str = "*" if _origins_raw == "*" else [o.strip() for o in _origins_raw.split(",")]
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "./uploads")
+STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
 
 # ── Socket.IO ────────────────────────────────────────────
 
@@ -53,12 +55,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Uploaded avatars share the origin of the game: never let a browser sniff them as HTML."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 app.include_router(auth.router)
 app.include_router(users.router)
 
 # Serve uploaded avatars
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+# The browser client (single page app). Mounted last so the API routes above win.
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
 # ── Combined ASGI app ───────────────────────────────────
 

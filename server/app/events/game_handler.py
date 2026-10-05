@@ -142,6 +142,11 @@ def register_events(sio: socketio.AsyncServer):
         if game and game.finished and game.rematch_requests:
             rematch_other_sid = game.black_sid if sid == game.white_sid else game.white_sid
 
+        # Quitting an unfinished game is a forfeit (the opponent would otherwise
+        # keep playing against nobody).
+        if game and not game.finished:
+            await _handle_disconnect_forfeit(sio, sid, game)
+
         room_id = room_manager.leave_room(sid)
         if room_id:
             await sio.leave_room(sid, room_id)

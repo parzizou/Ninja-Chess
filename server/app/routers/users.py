@@ -19,6 +19,21 @@ router = APIRouter(tags=["users"])
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "./uploads")
 
 
+PNG_MAGIC = bytes.fromhex("89504e470d0a1a0a")
+JPEG_MAGIC = bytes.fromhex("ffd8ff")
+
+
+def _image_extension(data: bytes) -> str | None:
+    """Return the file extension matching the image signature, or None."""
+    if data.startswith(PNG_MAGIC):
+        return "png"
+    if data.startswith(JPEG_MAGIC):
+        return "jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
 def _get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)) -> User:
     """Extract Bearer token from Authorization header."""
     if not authorization.startswith("Bearer "):
@@ -109,15 +124,19 @@ async def upload_avatar(
     if file.content_type not in ("image/png", "image/jpeg", "image/webp"):
         raise HTTPException(status_code=400, detail="Only PNG, JPEG or WebP allowed")
 
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-    ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "png"
-    filename = f"{user.id}_{uuid.uuid4().hex[:8]}.{ext}"
-    path = os.path.join(UPLOAD_DIR, filename)
-
     content = await file.read()
     if len(content) > 2 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large (max 2 MB)")
+
+    # The avatar is served from the same origin as the web client: trust the
+    # file's real signature, never the client-supplied name or content type.
+    ext = _image_extension(content)
+    if ext is None:
+        raise HTTPException(status_code=400, detail="Invalid image file")
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    filename = f"{user.id}_{uuid.uuid4().hex[:8]}.{ext}"
+    path = os.path.join(UPLOAD_DIR, filename)
 
     with open(path, "wb") as f:
         f.write(content)

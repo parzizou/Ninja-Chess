@@ -8,9 +8,11 @@ Ce fichier sert de référence pour Claude (et tout développeur) travaillant su
 
 **Ninja Chess** est un jeu d'échecs multijoueur en ligne et en temps réel. La principale particularité est que les deux joueurs peuvent bouger leurs pièces simultanément — il n'y a pas de tour par tour. Chaque pièce a un cooldown individuel après chaque mouvement.
 
-Le projet est divisé en deux parties indépendantes :
-- `server/` — serveur Python gérant la logique de jeu, les comptes, les rooms et la communication réseau
-- `client/` — application Python compilée en `.exe` gérant l'affichage graphique et les interactions utilisateur
+Le jeu est une **application web** : il n'y a qu'un seul projet, `server/`, qui contient à la fois :
+- le serveur Python (logique de jeu, comptes, rooms, communication réseau)
+- le client navigateur (HTML/CSS/JS sans étape de build) servi en statique par ce même serveur (`server/static/`)
+
+Un seul conteneur Docker, exposé sur le port 8200.
 
 ---
 
@@ -31,14 +33,14 @@ Le projet est divisé en deux parties indépendantes :
 
 Le serveur tourne derrière un reverse proxy (Nginx) gérant le SSL, les WebSockets (`wss://`) et le trafic HTTP.
 
-### Client (`client/`)
+### Client navigateur (`server/static/`)
 
 | Composant | Technologie | Raison |
 |---|---|---|
-| Affichage graphique | `arcade` | API moderne, animations 2D fluides, meilleure DX que pyglet brut |
-| Communication réseau | `python-socketio[client]` | Cohérent avec le serveur, gère la reconnexion |
-| Compilation | `PyInstaller` | Génération du `.exe` Windows |
-| Stockage local | Fichier JSON (`credentials.json`) | Sauvegarde des identifiants pour "rester connecté" |
+| Interface | HTML + CSS + JavaScript (modules ES natifs) | Pas de build, servi directement par FastAPI |
+| Échiquier | `<canvas>` 2D | Animations, effets des augments, drag & drop (pointer events, tactile inclus) |
+| Communication réseau | `socket.io-client` (copie dans `static/js/vendor/`) | Compatible avec `python-socketio` |
+| Session "rester connecté" | `localStorage` (sinon `sessionStorage`) | JWT conservé côté navigateur |
 
 ---
 
@@ -47,33 +49,35 @@ Le serveur tourne derrière un reverse proxy (Nginx) gérant le SSL, les WebSock
 ```
 ninja-chess/
 ├── CLAUDE.md
-├── README.md
-├── client/
-│   ├── assets/
-│   │   └── sprites/          # Sprites PNG des pièces (ex: white_king.png, black_pawn.png)
-│   ├── screens/              # Écrans du jeu (login, home, game, leaderboard, profile)
-│   ├── components/           # Composants réutilisables (boutons, inputs, pièces)
-│   ├── utils/
-│   │   ├── socket_client.py  # Connexion et événements socketio
-│   │   └── credentials.py    # Lecture/écriture du fichier JSON local
-│   ├── main.py               # Point d'entrée du client
-│   ├── requirements.txt
-│   └── ninja-chess.spec      # Config PyInstaller
+├── docs/Rumble_augments.txt  # Description des augments
 └── server/
     ├── app/
-    │   ├── main.py           # Point d'entrée FastAPI + socketio
+    │   ├── main.py           # FastAPI + socketio + service des fichiers statiques
     │   ├── routers/          # Routes HTTP (auth, users, leaderboard)
-    │   ├── events/           # Handlers socketio (rooms, game, moves)
-    │   ├── models/           # Modèles SQLAlchemy (User, Game, Move)
+    │   ├── events/           # Handlers socketio (rooms, game, rumble)
+    │   ├── models/           # Modèles SQLAlchemy (User, Game)
     │   ├── schemas/          # Schémas Pydantic (requêtes/réponses)
-    │   ├── logic/            # Logique pure d'échecs (validation des coups, cooldowns, elo)
+    │   ├── logic/            # Logique pure d'échecs, augments, elo
     │   └── database.py       # Initialisation SQLAlchemy + session
-    ├── alembic/              # Migrations de base de données
+    ├── static/               # Client web
+    │   ├── index.html
+    │   ├── css/style.css
+    │   ├── assets/           # sprites, sons, avatar par défaut
+    │   └── js/
+    │       ├── main.js, app.js        # démarrage + routeur d'écrans
+    │       ├── api.js, socket.js      # REST (JWT) + Socket.IO partagé
+    │       ├── board.js, chess.js     # canvas de l'échiquier + génération des coups (surlignage / IA)
+    │       ├── sounds.js, assets.js, util.js
+    │       ├── vendor/socket.io.min.js
+    │       └── screens/               # login, home, rooms, waiting, game, ai_*, augment_select, rumble_game, leaderboard, profile
     ├── docker-compose.yml
     ├── Dockerfile
     ├── requirements.txt
     └── .env                  # Variables d'environnement (SECRET_KEY, DATABASE_URL, etc.)
 ```
+
+Lancement local : `cd server && uvicorn app.main:combined_app --port 8200`, puis ouvrir http://localhost:8200.
+Remise à zéro de la base : arrêter le conteneur et supprimer `server/data/ninja_chess.db`.
 
 ---
 
@@ -123,7 +127,7 @@ Conventions : `snake_case`, préfixe selon le contexte.
 
 | Pièce | Cooldown |
 |---|---|
-| Pion | 1 s |
+| Pion | 1,5 s |
 | Cavalier | 3 s |
 | Fou | 3 s |
 | Tour | 4 s |
@@ -144,7 +148,12 @@ Formule standard Elo (K=32). Deux scores distincts : un pour le mode Standard, u
 
 Le mode Rumble oppose 2 joueurs sur plusieurs manches.
 
-- Le premier joueur à gagner **4 manches** remporte la partie (format BO7).
+- Le premier joueur à gagner **3 manches** remporte la partie (format BO5).
+  > Valeur de référence : `ROUNDS_TO_WIN` dans `server/app/logic/rumble.py`. La
+  > spécification d'origine prévoyait un BO7 (4 manches) ; le code et l'UI sont
+  > aujourd'hui alignés sur un BO5. Passer en BO7 demande de changer
+  > `ROUNDS_TO_WIN` **et** le nombre de pips dans `renderScore` / `scorePips`
+  > (`server/static/js/screens/rumble_game.js` et `augment_select.js`).
 - Avant chaque manche, chaque joueur reçoit **3 augments aléatoires**.
 - Chaque augment proposé peut être **relancé une seule fois** (reroll individuel), puis le joueur sélectionne **1 augment final**.
 - Une fois les sélections validées, la manche démarre avec les augments actifs.
@@ -152,7 +161,7 @@ Le mode Rumble oppose 2 joueurs sur plusieurs manches.
 - Si une règle/augment introduit plusieurs rois, tous les rois requis doivent être capturés pour perdre.
 - Chaque augment a une description claire de son effet et de sa durée (si activable).
 - Les augments sont conçus pour être **équilibrés** et **interactifs**, favorisant des stratégies variées.
-- les augments sont décits dans le fichier `client/Rumble_augments.txt` et peuvent être modifiés/ajoutés au fil du développement.
+- les augments sont décits dans le fichier `docs/Rumble_augments.txt` et peuvent être modifiés/ajoutés au fil du développement.
 - Les augments sont actives pour toutes les manches et donc se cumulent, car on en choisi un à chaque manche, mais on en perd jamais.
 - Il est cependant impossible de pouvoir choisir 2 fois le même augment, une fois qu'on a choisi un augment, il n'est plus disponible dans les propositions d'augments pour les manches suivantes.
 - Certaines augments sont incompatibles entre elles, par exemple : "transition" et "sexo-permutation" ne peuvent pas être actives en même temps, si un joueur a déjà l'une de ces augments, l'autre ne lui sera jamais proposée.
@@ -166,9 +175,9 @@ Le mode Rumble oppose 2 joueurs sur plusieurs manches.
 
 - L'échiquier est affiché au centre.
 - Une sidebar à gauche et une sidebar à droite affichent le profil de chaque joueur et la liste de ses augments actifs.
-- Le score est affiché dans un losange composé de **4 carrés** (style cases d'échecs) qui se remplissent à chaque manche gagnée.
-- Le remplissage des carrés utilise des teintes d'or plus ou moins foncées.
-- Quand les 4 carrés sont remplis, la victoire de match est atteinte.
+- Le score est affiché sous forme de **3 pips en losange** par joueur (style cases d'échecs) qui se remplissent à chaque manche gagnée.
+- Le remplissage des pips utilise des teintes d'or plus ou moins foncées.
+- Quand les 3 pips d'un joueur sont remplis, la victoire de match est atteinte.
 - L'échiquier Rumble utilise un code couleur distinct du mode Standard.
 
 ---
@@ -204,7 +213,8 @@ En production, Nginx sur `parzizou.fr` fait office de reverse proxy vers le port
 
 ## Conventions de code
 
-- **Python 3.11+** sur serveur et client
+- **Python 3.11+** côté serveur ; JavaScript ES modules (sans framework ni build) côté client
+- Tout texte venant d'un utilisateur (pseudo, nom de room) est inséré dans le DOM via `textContent` uniquement (jamais `innerHTML`)
 - Type hints partout (`from __future__ import annotations` si besoin)
 - Formatage : `black` + `isort`
 - Linting : `ruff`
@@ -226,16 +236,22 @@ ALLOWED_ORIGINS=https://ninja-chess.parzizou.fr
 ## Fonctionnalités prévues
 
 ### Implémentées (MVP)
-- [ ] Authentification (register/login/JWT)
-- [ ] "Rester connecté" (credentials.json local)
-- [ ] Rooms : création, liste, rejoindre
-- [ ] Mode Standard : échecs temps réel avec cooldowns
-- [ ] Classement Elo (Standard)
-- [ ] Profil joueur (stats, historique)
-- [ ] Avatar personnalisé
+- [x] Authentification (register/login/JWT)
+- [x] "Rester connecté" (credentials.json local)
+- [x] Rooms : création, liste, rejoindre
+- [x] Mode Standard : échecs temps réel avec cooldowns (roque, en passant, promotion, revanche)
+- [x] Classement Elo (Standard)
+- [x] Profil joueur (stats, historique)
+- [x] Avatar personnalisé (sélecteur de fichier + upload + affichage)
+- [x] Mode solo contre l'IA (local, 3 difficultés, sans impact Elo)
+
+### Implémentées (Rumble)
+- [x] Mode Rumble : 44 augments, manches BO5, sélection avec reroll individuel
+- [x] Classement Elo Rumble
+- [x] Personnalisation des touches (actions Rumble, choisies à la sélection de l'augment)
+- [x] Effets temporisés résolus par une boucle de tick serveur (`rumble:effects`)
 
 ### Prévues ultérieurement
-- [ ] Mode Rumble (règles spéciales, power-ups)
-- [ ] Classement Elo Rumble
-- [ ] Personnalisation des touches (actions Rumble)
 - [ ] Spectateur de parties en cours
+- [ ] Affichage de l'avatar dans les sidebars Rumble et le classement
+- [ ] Tests automatisés (`pytest`) pour la logique d'échecs, l'Elo et les augments

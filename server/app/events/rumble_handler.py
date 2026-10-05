@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Socket.IO event handlers for Rumble mode."""
 
+import asyncio
 import time
 from datetime import datetime, timezone
 
@@ -17,6 +18,13 @@ from app.logic.rumble import RumbleMatch, ROUNDS_TO_WIN
 from app.models.user import User
 from app.models.game import Game
 from app.routers.auth import decode_token
+
+
+# Background tick loops, one per active round: match_id -> asyncio.Task
+_tickers: dict[str, asyncio.Task] = {}
+
+# How often timed augment effects are resolved (meteor impacts, barrier expiry…)
+TICK_INTERVAL = 0.2
 
 
 def register_rumble_events(sio: socketio.AsyncServer):
@@ -104,12 +112,22 @@ def register_rumble_events(sio: socketio.AsyncServer):
         if not match.select_augment(color, augment_id):
             await sio.emit("rumble:error", {"message": "Sélection invalide"}, to=sid)
             return
+
+        # Decide *before* any await whether this selection is the one that starts
+        # the round. Both players usually confirm within milliseconds of each
+        # other, and each handler yields on the emits below — without claiming
+        # the transition synchronously, both would see both_selected() and start
+        # the round twice (duplicated augments, board reset a second time).
+        starts_round = match.both_selected() and match.phase == "augment_select"
+        if starts_round:
+            match.phase = "starting"
+
         await sio.emit("rumble:augment_confirmed", {"augment_id": augment_id}, to=sid)
         # Notify opponent
         opp_sid = match.opponent_sid(sid)
         await sio.emit("rumble:opponent_selected", {"augment_id": augment_id}, to=opp_sid)
 
-        if match.both_selected():
+        if starts_round:
             match.apply_selections()
             effects = match.start_round()
             await _emit_round_start(sio, match, effects)
@@ -321,15 +339,10 @@ def register_rumble_events(sio: socketio.AsyncServer):
 
         # Check if augment effects killed a king
         if not round_over:
-            for fx in augment_effects:
-                if fx.get("type") == "capture" and fx.get("piece_type") == "king":
-                    killed_color = fx.get("color")
-                    if killed_color:
-                        remaining = match.board.kings(Color(killed_color))
-                        multi = match.tags.get(f"multi_king_{killed_color}", False)
-                        if not multi or len(remaining) == 0:
-                            round_over = True
-                            winner = match.opponent_color(killed_color)
+            fx_winner = _winner_from_effects(match, augment_effects)
+            if fx_winner:
+                round_over = True
+                winner = fx_winner
 
         if round_over and winner:
             match_over = match.end_round(winner)
@@ -374,18 +387,14 @@ def register_rumble_events(sio: socketio.AsyncServer):
             "augment_id": augment_id, "color": color, "effects": all_effects,
         }, to=opp_sid)
 
-        # Check for kills from activation (meteor, kamikaze, corruption, etc.)
-        for fx in all_effects:
-            if fx.get("type") == "capture" and fx.get("piece_type") == "king":
-                killed_color = fx.get("color")
-                if killed_color:
-                    remaining = match.board.kings(Color(killed_color))
-                    multi = match.tags.get(f"multi_king_{killed_color}", False)
-                    if not multi or len(remaining) == 0:
-                        winner = match.opponent_color(killed_color)
-                        match_over = match.end_round(winner)
-                        await _emit_round_over(sio, match, winner, match_over)
-                        return
+        # Check for kills from activation (kamikaze, valkyrie, sniper, etc.)
+        # and for augments with an alternative win condition (roi de la colline
+        # can trigger on a Réincarnation teleport, not only on a move).
+        winner = _winner_from_effects(match, all_effects) or match.check_extra_wins()
+        if winner:
+            match_over = match.end_round(winner)
+            await _emit_round_over(sio, match, winner, match_over)
+            return
 
     # ── Disconnect Handling ──────────────────────────────────
 
@@ -399,6 +408,73 @@ def register_rumble_events(sio: socketio.AsyncServer):
 
 # ── Helper Functions ─────────────────────────────────────────
 
+def _winner_from_effects(match: RumbleMatch, effects: list[dict]) -> str | None:
+    """Scan augment effects for a lethal king capture and return the round winner."""
+    for fx in effects:
+        if fx.get("type") != "capture" or fx.get("piece_type") != "king":
+            continue
+        killed_color = fx.get("color")
+        if not killed_color:
+            continue
+        remaining = match.board.kings(Color(killed_color))
+        multi = match.tags.get(f"multi_king_{killed_color}", False)
+        if not multi or len(remaining) == 0:
+            return match.opponent_color(killed_color)
+    return None
+
+
+def _start_ticker(sio: socketio.AsyncServer, match: RumbleMatch):
+    """(Re)start the background loop that resolves timed augment effects.
+
+    Delayed effects — a meteor landing 2 s after impact, a Barrière noire
+    expiring and killing its own piece — only exist on a wall clock. Without
+    this loop they would sit frozen until the next move happened to run
+    ``process_tick`` as a side effect.
+    """
+    _stop_ticker(match.match_id)
+    _tickers[match.match_id] = asyncio.create_task(_tick_loop(sio, match))
+
+
+def _stop_ticker(match_id: str):
+    task = _tickers.pop(match_id, None)
+    if task is None or task.done():
+        return
+    # The tick loop ends rounds itself, so it can reach here as the running
+    # task — cancelling it there would abort the round-over broadcast midway.
+    # Its own loop condition stops it on the next iteration.
+    try:
+        if task is asyncio.current_task():
+            return
+    except RuntimeError:
+        pass
+    task.cancel()
+
+
+async def _tick_loop(sio: socketio.AsyncServer, match: RumbleMatch):
+    """Resolve timed augment effects and broadcast them to both players."""
+    try:
+        while match.phase == "playing" and not match.round_finished and not match.finished:
+            await asyncio.sleep(TICK_INTERVAL)
+            if match.phase != "playing" or match.round_finished or match.finished:
+                break
+
+            effects = match.process_tick()
+            if effects:
+                payload = {"effects": effects}
+                await sio.emit("rumble:effects", payload, to=match.white_sid)
+                await sio.emit("rumble:effects", payload, to=match.black_sid)
+
+            winner = _winner_from_effects(match, effects) or match.check_extra_wins()
+            if winner:
+                match_over = match.end_round(winner)
+                await _emit_round_over(sio, match, winner, match_over)
+                break
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # never let a tick error kill the match silently
+        print(f"[RUMBLE] tick loop error on {match.match_id}: {exc!r}")
+
+
 async def _emit_augment_proposals(sio: socketio.AsyncServer, match: RumbleMatch):
     """Send augment proposals to both players."""
     for color, sid in [("white", match.white_sid), ("black", match.black_sid)]:
@@ -406,6 +482,7 @@ async def _emit_augment_proposals(sio: socketio.AsyncServer, match: RumbleMatch)
         if match.selected.get(color) == "__skip__":
             await sio.emit("rumble:augment_phase", {
                 "round": match.current_round,
+                "your_color": color,
                 "proposals": [],
                 "skipped": True,
                 "scores": match.rounds_won,
@@ -415,6 +492,7 @@ async def _emit_augment_proposals(sio: socketio.AsyncServer, match: RumbleMatch)
         else:
             await sio.emit("rumble:augment_phase", {
                 "round": match.current_round,
+                "your_color": color,
                 "proposals": [a.to_dict() for a in proposals],
                 "skipped": False,
                 "scores": match.rounds_won,
@@ -425,6 +503,7 @@ async def _emit_augment_proposals(sio: socketio.AsyncServer, match: RumbleMatch)
 
 async def _emit_round_start(sio: socketio.AsyncServer, match: RumbleMatch, effects: list[dict]):
     """Send round start data to both players."""
+    _start_ticker(sio, match)
     for color, sid in [("white", match.white_sid), ("black", match.black_sid)]:
         state = match.get_board_state(color)
         entities = match.get_entities_for_viewer(color)
@@ -453,11 +532,13 @@ async def _emit_round_over(sio: socketio.AsyncServer, match: RumbleMatch,
         "match_over": match_over,
         "match_winner": match.match_winner,
     }
+    _stop_ticker(match.match_id)
     await sio.emit("rumble:round_over", payload, to=match.white_sid)
     await sio.emit("rumble:round_over", payload, to=match.black_sid)
 
     if match_over:
         await _record_rumble_result(match)
+        room_manager.remove_rumble_match(match.match_id)
     else:
         # Auto-start next augment phase after a delay (client handles display)
         match.phase = "augment_select"
@@ -485,6 +566,7 @@ async def _handle_rumble_forfeit(sio: socketio.AsyncServer, disconnected_sid: st
         "reason": "opponent_disconnected",
     }, to=winner_sid)
 
+    _stop_ticker(match.match_id)
     await _record_rumble_result(match)
     room_manager.remove_rumble_match(match.match_id)
 

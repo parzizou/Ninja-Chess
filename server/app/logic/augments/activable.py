@@ -309,6 +309,11 @@ class Meteore(BaseAugment):
                     effects.append({"type": "meteor_impact", "row": m["row"], "col": m["col"],
                                     "captured_type": piece.piece_type.value,
                                     "captured_color": piece.color.value})
+                    # Also emit a standard capture effect so round-end detection
+                    # (which scans for a dead king) sees the kill.
+                    effects.append({"type": "capture", "row": m["row"], "col": m["col"],
+                                    "piece_type": piece.piece_type.value,
+                                    "color": piece.color.value, "reason": "meteor"})
                 else:
                     effects.append({"type": "meteor_impact", "row": m["row"], "col": m["col"]})
             else:

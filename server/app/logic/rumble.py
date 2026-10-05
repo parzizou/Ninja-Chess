@@ -117,8 +117,12 @@ class RumbleMatch:
             if i != index:
                 exclude.add(aug.id)
 
+        # Same incompatibility set as generate_proposals: the owned augment ids
+        # AND the ids they declare as incompatible, so the exclusion works in
+        # both directions (owning A must block B even when only B declares A).
         incompat = set()
         for aug in self.augments[color]:
+            incompat.add(aug.id)
             for inc in aug.incompatible_with:
                 incompat.add(inc)
 
@@ -164,6 +168,9 @@ class RumbleMatch:
         self.board = Board()
         self.entities.clear()
         self.tags.clear()
+        # Activable cooldowns are per-round: an augment fired at the end of a
+        # round must not still be on cooldown when the next one begins.
+        self.activation_cds.clear()
         self.round_finished = False
         self.round_winner = None
         self.phase = "playing"

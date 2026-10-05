@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 import bcrypt
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -91,6 +91,21 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         )
 
     token = create_access_token({"sub": user.username})
+    return TokenResponse(
+        access_token=token,
+        username=user.username,
+        elo_standard=user.elo_standard,
+        elo_rumble=user.elo_rumble,
+    )
+
+
+@router.get("/me", response_model=TokenResponse)
+def me(authorization: str = Header(...), db: Session = Depends(get_db)):
+    """Validate a stored token and return the account it belongs to (used by 'stay logged in')."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization header")
+    token = authorization[7:]
+    user = get_user_from_token(token, db)
     return TokenResponse(
         access_token=token,
         username=user.username,
