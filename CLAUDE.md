@@ -49,6 +49,7 @@ Le serveur tourne derrière un reverse proxy (Nginx) gérant le SSL, les WebSock
 ```
 ninja-chess/
 ├── CLAUDE.md
+├── docker-compose.yml        # Orchestration (build ./server, port 8200)
 ├── docs/Rumble_augments.txt  # Description des augments
 └── server/
     ├── app/
@@ -70,12 +71,12 @@ ninja-chess/
     │       ├── sounds.js, assets.js, util.js
     │       ├── vendor/socket.io.min.js
     │       └── screens/               # login, home, rooms, waiting, game, ai_*, augment_select, rumble_game, leaderboard, profile
-    ├── docker-compose.yml
     ├── Dockerfile
     ├── requirements.txt
     └── .env                  # Variables d'environnement (SECRET_KEY, DATABASE_URL, etc.)
 ```
 
+Déploiement : `docker compose up -d --build` depuis la racine.
 Lancement local : `cd server && uvicorn app.main:combined_app --port 8200`, puis ouvrir http://localhost:8200.
 Remise à zéro de la base : arrêter le conteneur et supprimer `server/data/ninja_chess.db`.
 
@@ -184,7 +185,7 @@ Le mode Rumble oppose 2 joueurs sur plusieurs manches.
 
 ## Docker (serveur)
 
-Le dossier `server/` contient un `docker-compose.yml` qui orchestre :
+Le `docker-compose.yml` à la racine du projet qui orchestre :
 - Le conteneur `app` — le serveur FastAPI/socketio
 - Le volume persistant pour la base SQLite
 
@@ -195,16 +196,16 @@ version: "3.9"
 
 services:
   app:
-    build: .
+    build: ./server
     container_name: ninja-chess-server
     restart: unless-stopped
     ports:
       - "8200:8200"
     volumes:
-      - ./data:/app/data        # Persistance de la base SQLite
-      - ./uploads:/app/uploads  # Avatars uploadés
+      - ./server/data:/app/data        # Persistance de la base SQLite
+      - ./server/uploads:/app/uploads  # Avatars uploadés
     env_file:
-      - .env
+      - ./server/.env
 ```
 
 En production, Nginx sur `parzizou.fr` fait office de reverse proxy vers le port 8200 et gère le SSL/TLS. Les WebSockets passent par `wss://ninja-chess.parzizou.fr`.
