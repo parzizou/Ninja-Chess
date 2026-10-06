@@ -13,8 +13,8 @@ export const SIZE = SQ * 8;
 const ANIM_SPEED = 8;
 
 const THEMES = {
-  standard: { light: "rgb(240,217,181)", dark: "rgb(181,136,99)", border: "rgb(100,80,60)", highlight: "rgba(255,255,0,0.31)" },
-  rumble: { light: "rgb(200,190,220)", dark: "rgb(110,90,140)", border: "rgb(140,100,180)", highlight: "rgba(255,200,50,0.35)" },
+  standard: { light: "rgb(255,236,186)", dark: "rgb(226,104,60)", border: "rgb(18,13,26)", highlight: "rgba(255,230,0,0.38)" },
+  rumble: { light: "rgb(226,208,255)", dark: "rgb(132,84,226)", border: "rgb(18,13,26)", highlight: "rgba(255,210,50,0.42)" },
 };
 
 // Maps the server "visual" tag of a transformed piece to its sprite suffix.
@@ -84,7 +84,9 @@ export class BoardView {
     this.laserEffects = [];
     this.pulseEffects = [];
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // The board is displayed much larger than SIZE css px, so render the backing
+    // store at a higher resolution to keep sprites and lines crisp.
+    const dpr = Math.min(window.devicePixelRatio || 1, 2) * 1.5;
     canvas.width = SIZE * dpr;
     canvas.height = SIZE * dpr;
     this.g = canvas.getContext("2d");

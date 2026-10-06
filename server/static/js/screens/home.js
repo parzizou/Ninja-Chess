@@ -22,9 +22,9 @@ export default function mountHome(root) {
   refreshUser().then(() => { if (alive) setElo(); });
 
   const menu = [
-    ["⚔  Jouer - Standard", "btn-blue", () => go("rooms")],
-    ["🤖  Jouer vs IA", "btn-green", () => go("ai_difficulty")],
-    ["🔥  Jouer - Rumble", "btn-rumble", () => go("rumble_rooms")],
+    ["⚔  Standard", "btn-blue", () => go("rooms")],
+    ["🤖  Vs IA", "btn-green", () => go("ai_difficulty")],
+    ["🔥  Rumble", "btn-rumble", () => go("rumble_rooms")],
     ["🏆  Classement", "btn-dim", () => go("leaderboard")],
     ["👤  Mon Profil", "btn-dim", () => go("profile")],
   ];
@@ -38,8 +38,7 @@ export default function mountHome(root) {
       })),
     h("div", { class: "home-panel" },
       h("div", { class: "home-logo" },
-        h("img", { src: spriteUrl("white_king"), alt: "", width: "44", height: "44" }),
-        h("span", { text: "NINJA CHESS" })),
+        h("img", { src: "/assets/logo.png", alt: "Ninja Chess" })),
       h("div", { class: "home-rule" }),
       h("p", { class: "subtitle", text: "Échecs en temps réel simultané" }),
       h("div", { class: "player-card" },
